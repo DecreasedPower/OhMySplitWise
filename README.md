@@ -21,3 +21,30 @@ Telegram-бот для учета общих покупок в рублях и �
 5. Проверьте `GET /health`, затем откройте бота и отправьте `/start`.
 
 `TELEGRAM_WEBHOOK_URL` задается без пути: приложение добавляет `/telegram/webhook`. Схема базы обновляется миграциями при старте.
+
+## Production
+
+Конфигурация с PostgreSQL и Caddy находится в `deploy/`. Caddy автоматически получает TLS-сертификат и проксирует запросы в приложение.
+
+На сервере создайте `/opt/ohmysplitwise/.env` с правами `600`:
+
+```env
+DOMAIN=bot.example.com
+APP_VERSION=production
+TELEGRAM_BOT_TOKEN=replace-me
+TELEGRAM_WEBHOOK_SECRET=replace-with-a-random-secret
+POSTGRES_PASSWORD=replace-with-a-random-password
+```
+
+Образ приложения должен быть загружен как `ohmysplitwise:production`. Запуск и обслуживание:
+
+```bash
+cd /opt/ohmysplitwise
+docker compose up -d
+docker compose ps
+docker compose logs -f app
+docker compose pull postgres caddy
+docker compose up -d
+```
+
+Для работы сертификата DNS-запись домена должна указывать на сервер, а порты `80` и `443` должны быть доступны извне. PostgreSQL не публикуется наружу. Для production рекомендуется не менее 1 ГБ RAM и 10 ГБ диска.
