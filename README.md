@@ -48,3 +48,9 @@ docker compose up -d
 ```
 
 Для работы сертификата DNS-запись домена должна указывать на сервер, а порты `80` и `443` должны быть доступны извне. PostgreSQL не публикуется наружу. Для production рекомендуется не менее 1 ГБ RAM и 10 ГБ диска.
+
+### Continuous Deployment
+
+Workflow `.github/workflows/deploy.yml` автоматически собирает и тестирует образ после push в `main`. Развертывание ожидает ручного подтверждения в GitHub Environment `production`. После подтверждения образ передается на VPS по SSH; `deploy/deploy.sh` обновляет приложение, проверяет `/health` и автоматически откатывает предыдущую версию при ошибке.
+
+GitHub Environment должен содержать секреты `VPS_HOST`, `VPS_HOST_KEY` и `VPS_SSH_PRIVATE_KEY`. Секреты приложения остаются только в `/opt/ohmysplitwise/.env` на сервере.
