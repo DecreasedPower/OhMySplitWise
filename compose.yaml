@@ -1,0 +1,34 @@
+﻿services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: splitmoney
+      POSTGRES_USER: splitmoney
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-splitmoney}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U splitmoney -d splitmoney"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  splitmoneytg:
+    image: splitmoneytg
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Postgres: Host=postgres;Database=splitmoney;Username=splitmoney;Password=${POSTGRES_PASSWORD:-splitmoney}
+      Telegram__BotToken: ${TELEGRAM_BOT_TOKEN}
+      Telegram__WebhookUrl: ${TELEGRAM_WEBHOOK_URL}
+      Telegram__WebhookSecret: ${TELEGRAM_WEBHOOK_SECRET}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
