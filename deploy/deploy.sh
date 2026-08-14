@@ -2,6 +2,7 @@
 set -euo pipefail
 
 readonly deploy_dir=/opt/ohmysplitwise
+readonly backup_dir="$deploy_dir/backups"
 readonly archive=${1:?Image archive path is required}
 readonly version=${2:?Image version is required}
 
@@ -21,6 +22,17 @@ cleanup_archive() {
     rm -f "$archive"
 }
 trap cleanup_archive EXIT
+
+install -d -m 700 "$backup_dir"
+backup="$backup_dir/splitmoney-$version.dump"
+backup_tmp="$backup.tmp"
+rm -f "$backup_tmp"
+if ! docker compose exec -T postgres pg_dump -U splitmoney -d splitmoney --format=custom > "$backup_tmp"; then
+    rm -f "$backup_tmp"
+    exit 1
+fi
+chmod 600 "$backup_tmp"
+mv "$backup_tmp" "$backup"
 
 gzip -dc "$archive" | docker load
 sed -i "s/^APP_VERSION=.*/APP_VERSION=$version/" .env

@@ -76,10 +76,6 @@ jobs:
       - name: Upload production image
         run: scp ohmysplitwise-${{ github.sha }}.tar.gz deploy@${{ secrets.VPS_HOST }}:/tmp/
 
-      - name: Back up production database
-        run: |
-          ssh deploy@${{ secrets.VPS_HOST }} "sudo install -d -m 700 /opt/ohmysplitwise/backups && sudo sh -c 'cd /opt/ohmysplitwise && docker compose exec -T postgres pg_dump -U splitmoney -d splitmoney --format=custom > backups/splitmoney-${{ github.sha }}.dump && chmod 600 backups/splitmoney-${{ github.sha }}.dump'"
-
       - name: Deploy with rollback
         run: ssh deploy@${{ secrets.VPS_HOST }} sudo /opt/ohmysplitwise/deploy.sh /tmp/ohmysplitwise-${{ github.sha }}.tar.gz ${{ github.sha }}
 
