@@ -60,10 +60,7 @@ GitHub Environment должен содержать секреты `VPS_HOST`, `V
 Скрипт `deploy/cleanup-backups.sh` сохраняет три последних дампа в `/opt/ohmysplitwise/backups` и удаляет более старые. Для ежедневного запуска установите скрипт и systemd units на VPS:
 
 ```bash
-sudo install -o root -g root -m 755 deploy/cleanup-backups.sh /opt/ohmysplitwise/cleanup-backups.sh
-sudo install -o root -g root -m 644 deploy/ohmysplitwise-backup-cleanup.service /etc/systemd/system/ohmysplitwise-backup-cleanup.service
-sudo install -o root -g root -m 644 deploy/ohmysplitwise-backup-cleanup.timer /etc/systemd/system/ohmysplitwise-backup-cleanup.timer
-sudo systemctl daemon-reload
+curl -fsSL https://raw.githubusercontent.com/DecreasedPower/OhMySplitWise/<COMMIT_SHA>/deploy/install-backup-cleanup.sh | sudo bash -s -- <COMMIT_SHA>
 sudo /opt/ohmysplitwise/cleanup-backups.sh --dry-run
 sudo /opt/ohmysplitwise/cleanup-backups.sh
 sudo systemctl enable --now ohmysplitwise-backup-cleanup.timer
