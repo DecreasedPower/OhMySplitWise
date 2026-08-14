@@ -147,7 +147,7 @@ public sealed class BotHandler(
                 data.ManagedName = text;
                 await SetSession(userId, "managed_details", data, ct);
                 await Send(userId, "Введите реквизиты участника или нажмите «Пропустить»:", ct,
-                    new InlineKeyboardMarkup([[InlineKeyboardButton.WithCallbackData("Пропустить", "managed_details_skip")]]));
+                    new InlineKeyboardMarkup([[InlineKeyboardButton.WithCallbackData("⏭️ Пропустить", "managed_details_skip")]]));
                 break;
             case "managed_details":
                 if (text.Length > 500) { await Send(userId, "Реквизиты не должны превышать 500 символов.", ct); return; }
@@ -188,8 +188,8 @@ public sealed class BotHandler(
 
     private async Task ShowMain(long chatId, string text, CancellationToken ct) => await Send(chatId, text, ct,
         new InlineKeyboardMarkup([
-            [InlineKeyboardButton.WithCallbackData("Мои группы", "groups"), InlineKeyboardButton.WithCallbackData("Создать группу", "newgroup")],
-            [InlineKeyboardButton.WithCallbackData("Реквизиты", "details")]
+            [InlineKeyboardButton.WithCallbackData("👥 Мои группы", "groups"), InlineKeyboardButton.WithCallbackData("➕ Создать группу", "newgroup")],
+            [InlineKeyboardButton.WithCallbackData("💳 Реквизиты", "details")]
         ]));
 
     private async Task ShowGroups(long userId, CancellationToken ct)
@@ -198,9 +198,9 @@ public sealed class BotHandler(
                                                   (x.Group.Type == GroupType.Collective || x.Group.OwnerId == userId))
             .Select(x => x.Group).OrderBy(x => x.Name).ToListAsync(ct);
         var rows = groups.Select(x => new[] { InlineKeyboardButton.WithCallbackData(
-            $"[{(x.Type == GroupType.Collective ? "Коллективная" : "Самостоятельная")}] {x.Name}", $"group:{x.Id:N}") }).ToList();
-        rows.Add([InlineKeyboardButton.WithCallbackData("Создать группу", "newgroup")]);
-        rows.Add([InlineKeyboardButton.WithCallbackData("Назад", "main")]);
+            $"{(x.Type == GroupType.Collective ? "👥" : "👤")} [{(x.Type == GroupType.Collective ? "Коллективная" : "Самостоятельная")}] {x.Name}", $"group:{x.Id:N}") }).ToList();
+        rows.Add([InlineKeyboardButton.WithCallbackData("➕ Создать группу", "newgroup")]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("◀️ Назад", "main")]);
         await Send(userId, groups.Count == 0 ? "У вас пока нет групп." : "Ваши группы:", ct, new InlineKeyboardMarkup(rows));
     }
 
@@ -210,22 +210,22 @@ public sealed class BotHandler(
         if (group is null) { await ShowGroups(userId, ct); return; }
         var rows = new List<InlineKeyboardButton[]>
         {
-            new[] { InlineKeyboardButton.WithCallbackData("Добавить покупку", $"expense_new:{group.Id:N}") },
-            new[] { InlineKeyboardButton.WithCallbackData("Покупки", $"expenses:{group.Id:N}"), InlineKeyboardButton.WithCallbackData("Баланс и долги", $"balance:{group.Id:N}") }
+            new[] { InlineKeyboardButton.WithCallbackData("🧾 Добавить покупку", $"expense_new:{group.Id:N}") },
+            new[] { InlineKeyboardButton.WithCallbackData("🛒 Покупки", $"expenses:{group.Id:N}"), InlineKeyboardButton.WithCallbackData("⚖️ Баланс и долги", $"balance:{group.Id:N}") }
         };
         if (group.Type == GroupType.Collective)
         {
-            rows.Add([InlineKeyboardButton.WithCallbackData("Пригласить", $"invite:{group.Id:N}"), InlineKeyboardButton.WithCallbackData("Выйти", $"leave:{group.Id:N}")]);
-            rows.Add([InlineKeyboardButton.WithCallbackData("Участники", $"participants_list:{group.Id:N}")]);
+            rows.Add([InlineKeyboardButton.WithCallbackData("✉️ Пригласить", $"invite:{group.Id:N}"), InlineKeyboardButton.WithCallbackData("🚪 Выйти", $"leave:{group.Id:N}")]);
+            rows.Add([InlineKeyboardButton.WithCallbackData("👥 Участники", $"participants_list:{group.Id:N}")]);
         }
         else
         {
-            rows.Add([InlineKeyboardButton.WithCallbackData("Добавить пользователя", $"managed_new:{group.Id:N}")]);
-            rows.Add([InlineKeyboardButton.WithCallbackData("Участники", $"participants_list:{group.Id:N}")]);
+            rows.Add([InlineKeyboardButton.WithCallbackData("➕ Добавить пользователя", $"managed_new:{group.Id:N}")]);
+            rows.Add([InlineKeyboardButton.WithCallbackData("👥 Участники", $"participants_list:{group.Id:N}")]);
         }
         if (group.OwnerId == userId)
-            rows.Add([InlineKeyboardButton.WithCallbackData("Удалить группу", $"group_delete:{group.Id:N}")]);
-        rows.Add([InlineKeyboardButton.WithCallbackData("К группам", "groups")]);
+            rows.Add([InlineKeyboardButton.WithCallbackData("🗑️ Удалить группу", $"group_delete:{group.Id:N}")]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("◀️ К группам", "groups")]);
         await Send(userId, $"Группа: {group.Name}\nТип: {(group.Type == GroupType.Collective ? "коллективная" : "самостоятельная")}", ct, new InlineKeyboardMarkup(rows));
     }
 
@@ -235,8 +235,8 @@ public sealed class BotHandler(
         if (group is null) { await ShowGroups(userId, ct); return; }
         await Send(userId, $"Удалить группу «{group.Name}»? Она исчезнет у всех участников. Отменить это действие через бота будет нельзя.", ct,
             new InlineKeyboardMarkup([
-                [InlineKeyboardButton.WithCallbackData("Удалить", $"group_delete_confirm:{group.Id:N}")],
-                [InlineKeyboardButton.WithCallbackData("Отмена", $"group:{group.Id:N}")]
+                [InlineKeyboardButton.WithCallbackData("🗑️ Удалить", $"group_delete_confirm:{group.Id:N}")],
+                [InlineKeyboardButton.WithCallbackData("❌ Отмена", $"group:{group.Id:N}")]
             ]));
     }
 
@@ -260,9 +260,9 @@ public sealed class BotHandler(
     {
         await ClearSession(userId, ct);
         await Send(userId, "Выберите тип группы:", ct, new InlineKeyboardMarkup([
-            [InlineKeyboardButton.WithCallbackData("Коллективная", $"group_type:{(int)GroupType.Collective}")],
-            [InlineKeyboardButton.WithCallbackData("Самостоятельная", $"group_type:{(int)GroupType.Standalone}")],
-            [InlineKeyboardButton.WithCallbackData("Назад", "main")]
+            [InlineKeyboardButton.WithCallbackData("👥 Коллективная", $"group_type:{(int)GroupType.Collective}")],
+            [InlineKeyboardButton.WithCallbackData("👤 Самостоятельная", $"group_type:{(int)GroupType.Standalone}")],
+            [InlineKeyboardButton.WithCallbackData("◀️ Назад", "main")]
         ]));
     }
 
@@ -349,8 +349,8 @@ public sealed class BotHandler(
                 $"• {x.DisplayName}" + (string.IsNullOrWhiteSpace(x.PaymentDetails) ? "" : $"\n  Реквизиты: {x.PaymentDetails}")));
         var rows = new List<InlineKeyboardButton[]>();
         if (group.Type == GroupType.Standalone)
-            rows.Add([InlineKeyboardButton.WithCallbackData("Добавить пользователя", $"managed_new:{groupId:N}")]);
-        rows.Add([InlineKeyboardButton.WithCallbackData("Назад", $"group:{groupId:N}")]);
+            rows.Add([InlineKeyboardButton.WithCallbackData("➕ Добавить пользователя", $"managed_new:{groupId:N}")]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("◀️ Назад", $"group:{groupId:N}")]);
         await SendLong(userId, text, ct, new InlineKeyboardMarkup(rows));
     }
 
@@ -402,8 +402,8 @@ public sealed class BotHandler(
         var members = await Participants(data.GroupId, ct);
         var rows = members.Select(x => new[] { InlineKeyboardButton.WithCallbackData(
             $"{(data.ParticipantIds.Contains(x.ParticipantId) ? "✓" : "○")} {x.DisplayName}", $"participant:{x.ParticipantId}") }).ToList();
-        rows.Insert(0, [InlineKeyboardButton.WithCallbackData("Выбрать всех", "participants_all")]);
-        rows.Add([InlineKeyboardButton.WithCallbackData("Готово", "participants_done")]);
+        rows.Insert(0, [InlineKeyboardButton.WithCallbackData("☑️ Выбрать всех", "participants_all")]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("✅ Готово", "participants_done")]);
         await Send(userId, "Выберите участников покупки:", ct, new InlineKeyboardMarkup(rows));
     }
 
@@ -413,7 +413,7 @@ public sealed class BotHandler(
         var data = Deserialize(session.DataJson);
         if (data.ParticipantIds.Count == 0) { await Send(userId, "Выберите хотя бы одного участника.", ct); return; }
         await Send(userId, "Как разделить покупку?", ct, new InlineKeyboardMarkup([
-            [InlineKeyboardButton.WithCallbackData("Поровну", "split_equal"), InlineKeyboardButton.WithCallbackData("Вручную", "split_manual")]
+            [InlineKeyboardButton.WithCallbackData("➗ Поровну", "split_equal"), InlineKeyboardButton.WithCallbackData("✍️ Вручную", "split_manual")]
         ]));
     }
 
@@ -502,10 +502,10 @@ public sealed class BotHandler(
                    (expenses.Count == 0 ? "Покупок пока нет." : string.Join("\n", expenses.Select(x => $"• {x.Description}: {Money(x.AmountKopecks)}, оплатил {names.GetValueOrDefault(x.PayerId, x.PayerId.ToString())}")));
         var rows = expenses.Where(x => x.AuthorId == userId).Select(x => new[]
         {
-            InlineKeyboardButton.WithCallbackData($"Изменить: {Short(x.Description)}", $"expense_edit:{x.Id:N}"),
-            InlineKeyboardButton.WithCallbackData("Удалить", $"expense_delete:{x.Id:N}")
+            InlineKeyboardButton.WithCallbackData($"✏️ Изменить: {Short(x.Description)}", $"expense_edit:{x.Id:N}"),
+            InlineKeyboardButton.WithCallbackData("🗑️ Удалить", $"expense_delete:{x.Id:N}")
         }).ToList();
-        rows.Add([InlineKeyboardButton.WithCallbackData("Назад", $"group:{groupId:N}")]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("◀️ Назад", $"group:{groupId:N}")]);
         await Send(userId, text, ct, new InlineKeyboardMarkup(rows));
     }
 
@@ -544,10 +544,10 @@ public sealed class BotHandler(
         var rows = group.Type == GroupType.Collective
             ? suggestions.Where(x => x.FromUserId == userId && names.ContainsKey(x.ToUserId)).Select(x => new[]
             {
-                InlineKeyboardButton.WithCallbackData($"Я перевел {names[x.ToUserId]} {Money(x.AmountKopecks)}", $"pay:{groupId:N}:{x.ToUserId}")
+                InlineKeyboardButton.WithCallbackData($"💸 Я перевел {names[x.ToUserId]} {Money(x.AmountKopecks)}", $"pay:{groupId:N}:{x.ToUserId}")
             }).ToList()
             : [];
-        rows.Add([InlineKeyboardButton.WithCallbackData("Назад", $"group:{groupId:N}")]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("◀️ Назад", $"group:{groupId:N}")]);
         await SendLong(userId, text, ct, new InlineKeyboardMarkup(rows));
     }
 
@@ -565,7 +565,7 @@ public sealed class BotHandler(
         db.Transfers.Add(transfer); await db.SaveChangesAsync(ct);
         var sender = await db.Users.FindAsync([userId], ct);
         await Send(toUserId, $"{sender!.DisplayName} отметил перевод {Money(transfer.AmountKopecks)}. Подтвердите получение:", ct,
-            new InlineKeyboardMarkup([[InlineKeyboardButton.WithCallbackData("Получено", $"transfer_confirm:{transfer.Id:N}"), InlineKeyboardButton.WithCallbackData("Не получено", $"transfer_reject:{transfer.Id:N}")]]));
+            new InlineKeyboardMarkup([[InlineKeyboardButton.WithCallbackData("✅ Получено", $"transfer_confirm:{transfer.Id:N}"), InlineKeyboardButton.WithCallbackData("❌ Не получено", $"transfer_reject:{transfer.Id:N}")]]));
         await Send(userId, "Ожидаем подтверждения получателя.", ct);
     }
 
