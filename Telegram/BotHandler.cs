@@ -102,6 +102,7 @@ public sealed class BotHandler(
         if (data == "managed_details_skip") { await SaveManagedParticipant(chatId, null, ct); return; }
         if (data.StartsWith("payer:")) { await ChoosePayer(chatId, long.Parse(data[6..], CultureInfo.InvariantCulture), ct); return; }
         if (data.StartsWith("participant:")) { await ToggleParticipant(chatId, long.Parse(data[12..], CultureInfo.InvariantCulture), ct); return; }
+        if (data == "participants_all") { await SelectAllParticipants(chatId, ct); return; }
         if (data == "participants_done") { await ParticipantsDone(chatId, ct); return; }
         if (data == "split_equal") { await SaveEqualExpense(chatId, ct); return; }
         if (data == "split_manual") { await StartManualShares(chatId, ct); return; }
@@ -345,11 +346,21 @@ public sealed class BotHandler(
         await ShowParticipantPicker(userId, data, ct);
     }
 
+    private async Task SelectAllParticipants(long userId, CancellationToken ct)
+    {
+        var session = await RequiredSession(userId, "expense_participants", ct); if (session is null) return;
+        var data = Deserialize(session.DataJson);
+        data.ParticipantIds = (await Participants(data.GroupId, ct)).Select(x => x.ParticipantId).ToList();
+        await SetSession(userId, "expense_participants", data, ct);
+        await ShowParticipantPicker(userId, data, ct);
+    }
+
     private async Task ShowParticipantPicker(long userId, FlowData data, CancellationToken ct)
     {
         var members = await Participants(data.GroupId, ct);
         var rows = members.Select(x => new[] { InlineKeyboardButton.WithCallbackData(
             $"{(data.ParticipantIds.Contains(x.ParticipantId) ? "✓" : "○")} {x.DisplayName}", $"participant:{x.ParticipantId}") }).ToList();
+        rows.Insert(0, [InlineKeyboardButton.WithCallbackData("Выбрать всех", "participants_all")]);
         rows.Add([InlineKeyboardButton.WithCallbackData("Готово", "participants_done")]);
         await Send(userId, "Выберите участников покупки:", ct, new InlineKeyboardMarkup(rows));
     }
