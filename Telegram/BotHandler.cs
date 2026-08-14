@@ -91,6 +91,8 @@ public sealed class BotHandler(
         if (data.StartsWith("group_type:")) { await ChooseGroupType(chatId, data, ct); return; }
         if (data == "details") { await SetSession(chatId, "payment_details", new(), ct); await Send(chatId, "Введите реквизиты свободным текстом (до 500 символов):", ct); return; }
         if (data.StartsWith("group:")) { await ShowGroup(chatId, ParseGuid(data[6..]), ct); return; }
+        if (data.StartsWith("group_delete_confirm:")) { await DeleteGroup(chatId, ParseGuid(data["group_delete_confirm:".Length..]), ct); return; }
+        if (data.StartsWith("group_delete:")) { await ConfirmDeleteGroup(chatId, ParseGuid(data["group_delete:".Length..]), ct); return; }
         if (data.StartsWith("invite:")) { await Invite(chatId, ParseGuid(data[7..]), ct); return; }
         if (data.StartsWith("balance:")) { await ShowBalance(chatId, ParseGuid(data[8..]), ct); return; }
         if (data.StartsWith("expenses:")) { await ShowExpenses(chatId, ParseGuid(data[9..]), ct); return; }
@@ -115,6 +117,12 @@ public sealed class BotHandler(
     private async Task HandleText(long userId, string text, UserSession session, CancellationToken ct)
     {
         var data = Deserialize(session.DataJson);
+        if (data.GroupId != Guid.Empty && await MemberGroup(userId, data.GroupId, ct) is null)
+        {
+            await ClearSession(userId, ct);
+            await ShowGroups(userId, ct);
+            return;
+        }
         switch (session.State)
         {
             case "group_name":
@@ -206,14 +214,46 @@ public sealed class BotHandler(
             new[] { InlineKeyboardButton.WithCallbackData("Покупки", $"expenses:{group.Id:N}"), InlineKeyboardButton.WithCallbackData("Баланс и долги", $"balance:{group.Id:N}") }
         };
         if (group.Type == GroupType.Collective)
+        {
             rows.Add([InlineKeyboardButton.WithCallbackData("Пригласить", $"invite:{group.Id:N}"), InlineKeyboardButton.WithCallbackData("Выйти", $"leave:{group.Id:N}")]);
+            rows.Add([InlineKeyboardButton.WithCallbackData("Участники", $"participants_list:{group.Id:N}")]);
+        }
         else
         {
             rows.Add([InlineKeyboardButton.WithCallbackData("Добавить пользователя", $"managed_new:{group.Id:N}")]);
             rows.Add([InlineKeyboardButton.WithCallbackData("Участники", $"participants_list:{group.Id:N}")]);
         }
+        if (group.OwnerId == userId)
+            rows.Add([InlineKeyboardButton.WithCallbackData("Удалить группу", $"group_delete:{group.Id:N}")]);
         rows.Add([InlineKeyboardButton.WithCallbackData("К группам", "groups")]);
         await Send(userId, $"Группа: {group.Name}\nТип: {(group.Type == GroupType.Collective ? "коллективная" : "самостоятельная")}", ct, new InlineKeyboardMarkup(rows));
+    }
+
+    private async Task ConfirmDeleteGroup(long userId, Guid groupId, CancellationToken ct)
+    {
+        var group = await db.Groups.FirstOrDefaultAsync(x => x.Id == groupId && x.OwnerId == userId && !x.IsArchived, ct);
+        if (group is null) { await ShowGroups(userId, ct); return; }
+        await Send(userId, $"Удалить группу «{group.Name}»? Она исчезнет у всех участников. Отменить это действие через бота будет нельзя.", ct,
+            new InlineKeyboardMarkup([
+                [InlineKeyboardButton.WithCallbackData("Удалить", $"group_delete_confirm:{group.Id:N}")],
+                [InlineKeyboardButton.WithCallbackData("Отмена", $"group:{group.Id:N}")]
+            ]));
+    }
+
+    private async Task DeleteGroup(long userId, Guid groupId, CancellationToken ct)
+    {
+        var group = await db.Groups.FirstOrDefaultAsync(x => x.Id == groupId && x.OwnerId == userId && !x.IsArchived, ct);
+        if (group is null) { await ShowGroups(userId, ct); return; }
+
+        group.IsArchived = true;
+        var invitations = await db.Invitations.Where(x => x.GroupId == groupId && x.IsActive).ToListAsync(ct);
+        foreach (var invitation in invitations) invitation.IsActive = false;
+        var transfers = await db.Transfers.Where(x => x.GroupId == groupId && x.Status == TransferStatus.Pending).ToListAsync(ct);
+        foreach (var transfer in transfers) transfer.Status = TransferStatus.Cancelled;
+        await db.SaveChangesAsync(ct);
+        await ClearSession(userId, ct);
+        await Send(userId, $"Группа «{group.Name}» удалена.", ct);
+        await ShowGroups(userId, ct);
     }
 
     private async Task ShowGroupTypePicker(long userId, CancellationToken ct)
@@ -251,7 +291,7 @@ public sealed class BotHandler(
         var invite = await db.Invitations.FirstOrDefaultAsync(x => x.Token == token && x.IsActive, ct);
         if (invite is null) { await ShowMain(userId, "Приглашение недействительно.", ct); return; }
         var group = await db.Groups.FindAsync([invite.GroupId], ct);
-        if (group?.Type != GroupType.Collective) { await ShowMain(userId, "Эта группа не принимает приглашения.", ct); return; }
+        if (group is null || group.IsArchived || group.Type != GroupType.Collective) { await ShowMain(userId, "Эта группа не принимает приглашения.", ct); return; }
         var member = await db.GroupMembers.FindAsync([invite.GroupId, userId], ct);
         if (member is null) db.GroupMembers.Add(new GroupMember { GroupId = invite.GroupId, UserId = userId });
         else member.IsActive = true;
@@ -301,15 +341,17 @@ public sealed class BotHandler(
     private async Task ShowParticipants(long userId, Guid groupId, CancellationToken ct)
     {
         var group = await MemberGroup(userId, groupId, ct);
-        if (group is null || group.Type != GroupType.Standalone || group.OwnerId != userId)
-        { await ShowGroups(userId, ct); return; }
+        if (group is null) { await ShowGroups(userId, ct); return; }
         var participants = await Participants(groupId, ct);
-        var text = "Участники:\n" + string.Join("\n", participants.Select(x =>
-            $"• {x.DisplayName}" + (string.IsNullOrWhiteSpace(x.PaymentDetails) ? "" : $"\n  Реквизиты: {x.PaymentDetails}")));
-        await SendLong(userId, text, ct, new InlineKeyboardMarkup([
-            [InlineKeyboardButton.WithCallbackData("Добавить пользователя", $"managed_new:{groupId:N}")],
-            [InlineKeyboardButton.WithCallbackData("Назад", $"group:{groupId:N}")]
-        ]));
+        var text = group.Type == GroupType.Collective
+            ? "Участники:\n" + string.Join("\n", participants.Select(x => $"• {x.DisplayName}"))
+            : "Участники:\n" + string.Join("\n", participants.Select(x =>
+                $"• {x.DisplayName}" + (string.IsNullOrWhiteSpace(x.PaymentDetails) ? "" : $"\n  Реквизиты: {x.PaymentDetails}")));
+        var rows = new List<InlineKeyboardButton[]>();
+        if (group.Type == GroupType.Standalone)
+            rows.Add([InlineKeyboardButton.WithCallbackData("Добавить пользователя", $"managed_new:{groupId:N}")]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("Назад", $"group:{groupId:N}")]);
+        await SendLong(userId, text, ct, new InlineKeyboardMarkup(rows));
     }
 
     private async Task StartExpense(long userId, Guid groupId, Guid? expenseId, CancellationToken ct)
@@ -452,9 +494,12 @@ public sealed class BotHandler(
     private async Task ShowExpenses(long userId, Guid groupId, CancellationToken ct)
     {
         if (await MemberGroup(userId, groupId, ct) is null) return;
-        var expenses = await db.Expenses.Where(x => x.GroupId == groupId).OrderByDescending(x => x.CreatedAt).Take(20).ToListAsync(ct);
+        var groupExpenses = db.Expenses.Where(x => x.GroupId == groupId);
+        var total = await groupExpenses.SumAsync(x => (long?)x.AmountKopecks, ct) ?? 0;
+        var expenses = await groupExpenses.OrderByDescending(x => x.CreatedAt).Take(20).ToListAsync(ct);
         var users = await Participants(groupId, ct); var names = users.ToDictionary(x => x.ParticipantId, x => x.DisplayName);
-        var text = expenses.Count == 0 ? "Покупок пока нет." : string.Join("\n", expenses.Select(x => $"• {x.Description}: {Money(x.AmountKopecks)}, оплатил {names.GetValueOrDefault(x.PayerId, x.PayerId.ToString())}"));
+        var text = $"Общая сумма покупок: {Money(total)}\n\n" +
+                   (expenses.Count == 0 ? "Покупок пока нет." : string.Join("\n", expenses.Select(x => $"• {x.Description}: {Money(x.AmountKopecks)}, оплатил {names.GetValueOrDefault(x.PayerId, x.PayerId.ToString())}")));
         var rows = expenses.Where(x => x.AuthorId == userId).Select(x => new[]
         {
             InlineKeyboardButton.WithCallbackData($"Изменить: {Short(x.Description)}", $"expense_edit:{x.Id:N}"),
@@ -526,7 +571,8 @@ public sealed class BotHandler(
 
     private async Task ResolveTransfer(long userId, Guid transferId, bool confirmed, CancellationToken ct)
     {
-        var transfer = await db.Transfers.FirstOrDefaultAsync(x => x.Id == transferId && x.ToUserId == userId && x.Status == TransferStatus.Pending, ct);
+        var transfer = await db.Transfers.FirstOrDefaultAsync(x => x.Id == transferId && x.ToUserId == userId &&
+            x.Status == TransferStatus.Pending && db.Groups.Any(g => g.Id == x.GroupId && !g.IsArchived), ct);
         if (transfer is null) { await ShowMain(userId, "Перевод уже обработан или не найден. Выберите действие.", ct); return; }
         transfer.Status = confirmed ? TransferStatus.Confirmed : TransferStatus.Rejected; transfer.ResolvedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
@@ -558,7 +604,7 @@ public sealed class BotHandler(
 
     private async Task<ExpenseGroup?> MemberGroup(long userId, Guid groupId, CancellationToken ct) =>
         await db.GroupMembers
-            .Where(x => x.GroupId == groupId && x.UserId == userId && x.IsActive &&
+            .Where(x => x.GroupId == groupId && x.UserId == userId && x.IsActive && !x.Group.IsArchived &&
                         (x.Group.Type == GroupType.Collective || x.Group.OwnerId == userId))
             .Select(x => x.Group).FirstOrDefaultAsync(ct);
     private async Task<bool> IsParticipant(long participantId, Guid groupId, CancellationToken ct) =>
@@ -581,7 +627,11 @@ public sealed class BotHandler(
     private async Task<UserSession?> RequiredSession(long userId, string state, CancellationToken ct)
     {
         var session = await db.Sessions.FindAsync([userId], ct);
-        if (session?.State == state) return session;
+        if (session?.State == state)
+        {
+            var data = Deserialize(session.DataJson);
+            if (data.GroupId == Guid.Empty || await MemberGroup(userId, data.GroupId, ct) is not null) return session;
+        }
         await ClearSession(userId, ct);
         await ShowMain(userId, "Действие устарело. Выберите действие в актуальном меню.", ct);
         return null;
