@@ -1,0 +1,14 @@
+[Unit]
+Description=Remove old OhMySplitWise database backups
+ConditionPathIsDirectory=/opt/ohmysplitwise/backups
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/ohmysplitwise/cleanup-backups.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/ohmysplitwise/backups

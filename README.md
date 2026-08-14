@@ -54,3 +54,19 @@ docker compose up -d
 Workflow `.github/workflows/deploy.yml` автоматически собирает и тестирует образ после push в `main`. Развертывание ожидает ручного подтверждения в GitHub Environment `production`. После подтверждения образ передается на VPS по SSH; `deploy/deploy.sh` обновляет приложение, проверяет `/health` и автоматически откатывает предыдущую версию при ошибке.
 
 GitHub Environment должен содержать секреты `VPS_HOST`, `VPS_HOST_KEY` и `VPS_SSH_PRIVATE_KEY`. Секреты приложения остаются только в `/opt/ohmysplitwise/.env` на сервере.
+
+### Очистка резервных копий
+
+Скрипт `deploy/cleanup-backups.sh` сохраняет три последних дампа в `/opt/ohmysplitwise/backups` и удаляет более старые. Для ежедневного запуска установите скрипт и systemd units на VPS:
+
+```bash
+sudo install -o root -g root -m 755 deploy/cleanup-backups.sh /opt/ohmysplitwise/cleanup-backups.sh
+sudo install -o root -g root -m 644 deploy/ohmysplitwise-backup-cleanup.service /etc/systemd/system/ohmysplitwise-backup-cleanup.service
+sudo install -o root -g root -m 644 deploy/ohmysplitwise-backup-cleanup.timer /etc/systemd/system/ohmysplitwise-backup-cleanup.timer
+sudo systemctl daemon-reload
+sudo /opt/ohmysplitwise/cleanup-backups.sh --dry-run
+sudo /opt/ohmysplitwise/cleanup-backups.sh
+sudo systemctl enable --now ohmysplitwise-backup-cleanup.timer
+systemctl status ohmysplitwise-backup-cleanup.timer
+systemctl list-timers ohmysplitwise-backup-cleanup.timer
+```

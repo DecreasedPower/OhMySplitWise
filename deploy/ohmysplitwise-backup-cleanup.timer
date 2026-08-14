@@ -1,0 +1,11 @@
+[Unit]
+Description=Clean up OhMySplitWise database backups daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+Unit=ohmysplitwise-backup-cleanup.service
+
+[Install]
+WantedBy=timers.target
