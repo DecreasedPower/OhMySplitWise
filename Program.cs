@@ -33,6 +33,17 @@ await using (var scope = app.Services.CreateAsyncScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await db.Database.MigrateAsync();
+    await db.Database.ExecuteSqlRawAsync(
+        """
+        INSERT INTO "GroupParticipants"
+            ("GroupId", "ParticipantId", "TelegramUserId", "DisplayName", "PaymentDetails", "IsActive", "CreatedAt")
+        SELECT gm."GroupId", gm."UserId", gm."UserId", NULL, NULL, gm."IsActive", gm."JoinedAt"
+        FROM "GroupMembers" gm
+        JOIN "Groups" g ON g."Id" = gm."GroupId"
+        WHERE g."Type" = 0
+        ON CONFLICT ("GroupId", "ParticipantId") DO UPDATE
+        SET "TelegramUserId" = EXCLUDED."TelegramUserId", "IsActive" = EXCLUDED."IsActive";
+        """);
     var telegram = scope.ServiceProvider.GetRequiredService<IOptions<TelegramOptions>>().Value;
     if (!string.IsNullOrWhiteSpace(telegram.WebhookUrl))
     {

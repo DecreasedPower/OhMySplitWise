@@ -3,4 +3,5 @@
     <File Path="compose.yaml" />
   </Folder>
   <Project Path="SplitMoneyTg.csproj" />
+  <Project Path="SplitMoneyTg.Tests/SplitMoneyTg.Tests.csproj" />
 </Solution>

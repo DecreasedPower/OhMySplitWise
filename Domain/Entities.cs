@@ -9,14 +9,18 @@ public sealed class AppUser
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
+public enum GroupType { Collective, Standalone }
+
 public sealed class ExpenseGroup
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = "";
     public long OwnerId { get; set; }
+    public GroupType Type { get; set; }
     public bool IsArchived { get; set; }
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public List<GroupMember> Members { get; set; } = [];
+    public List<GroupParticipant> Participants { get; set; } = [];
 }
 
 public sealed class GroupMember
@@ -27,6 +31,19 @@ public sealed class GroupMember
     public DateTimeOffset JoinedAt { get; set; } = DateTimeOffset.UtcNow;
     public ExpenseGroup Group { get; set; } = null!;
     public AppUser User { get; set; } = null!;
+}
+
+public sealed class GroupParticipant
+{
+    public Guid GroupId { get; set; }
+    public long ParticipantId { get; set; }
+    public long? TelegramUserId { get; set; }
+    public string? DisplayName { get; set; }
+    public string? PaymentDetails { get; set; }
+    public bool IsActive { get; set; } = true;
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public ExpenseGroup Group { get; set; } = null!;
+    public AppUser? TelegramUser { get; set; }
 }
 
 public sealed class Invitation

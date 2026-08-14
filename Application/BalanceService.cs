@@ -10,8 +10,8 @@ public sealed class BalanceService(AppDbContext db)
 {
     public async Task<Dictionary<long, long>> GetBalances(Guid groupId, CancellationToken ct = default)
     {
-        var memberIds = await db.GroupMembers.Where(x => x.GroupId == groupId && x.IsActive)
-            .Select(x => x.UserId).ToListAsync(ct);
+        var memberIds = await db.GroupParticipants.Where(x => x.GroupId == groupId && x.IsActive)
+            .Select(x => x.ParticipantId).ToListAsync(ct);
         var balances = memberIds.ToDictionary(x => x, _ => 0L);
 
         var expenses = await db.Expenses.Where(x => x.GroupId == groupId).Include(x => x.Shares).ToListAsync(ct);

@@ -1,4 +1,7 @@
 using SplitMoneyTg.Application;
+using SplitMoneyTg.Domain;
+using SplitMoneyTg.Infrastructure;
+using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 namespace SplitMoneyTg.Tests;
@@ -69,5 +72,68 @@ public sealed class BalanceServiceTests
         Assert.Equal(60_000, shares[1_697_173_796]);
         Assert.DoesNotContain(0, shares.Keys);
         Assert.DoesNotContain(1, shares.Keys);
+    }
+
+    [Fact]
+    public void Minimize_SupportsManagedParticipantIds()
+    {
+        var transfers = BalanceService.Minimize(new Dictionary<long, long>
+        {
+            [-10] = -12_500,
+            [-20] = 12_500
+        });
+
+        var transfer = Assert.Single(transfers);
+        Assert.Equal(-10, transfer.FromUserId);
+        Assert.Equal(-20, transfer.ToUserId);
+        Assert.Equal(12_500, transfer.AmountKopecks);
+    }
+
+    [Fact]
+    public void GroupType_DefaultsToCollectiveForExistingBehavior()
+    {
+        Assert.Equal(GroupType.Collective, new ExpenseGroup().Type);
+    }
+
+    [Fact]
+    public async Task GetBalances_UsesManagedParticipantsInStandaloneGroup()
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        await using var db = new AppDbContext(options);
+        var groupId = Guid.NewGuid();
+        db.Groups.Add(new ExpenseGroup
+        {
+            Id = groupId,
+            OwnerId = 100,
+            Type = GroupType.Standalone,
+            Participants =
+            [
+                new GroupParticipant { ParticipantId = 100 },
+                new GroupParticipant { ParticipantId = -1, DisplayName = "Анна" },
+                new GroupParticipant { ParticipantId = -2, DisplayName = "Борис" }
+            ]
+        });
+        db.Expenses.Add(new Expense
+        {
+            GroupId = groupId,
+            AuthorId = 100,
+            PayerId = 100,
+            AmountKopecks = 1_200,
+            Shares =
+            [
+                new ExpenseShare { UserId = 100, AmountKopecks = 400 },
+                new ExpenseShare { UserId = -1, AmountKopecks = 400 },
+                new ExpenseShare { UserId = -2, AmountKopecks = 400 }
+            ]
+        });
+        await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        var balances = await new BalanceService(db).GetBalances(groupId, TestContext.Current.CancellationToken);
+
+        Assert.Equal(800, balances[100]);
+        Assert.Equal(-400, balances[-1]);
+        Assert.Equal(-400, balances[-2]);
     }
 }
