@@ -30,6 +30,7 @@ Telegram-бот для учета общих покупок в рублях и �
 
 ```env
 DOMAIN=bot.example.com
+HTTPS_PORT=443
 APP_VERSION=production
 TELEGRAM_BOT_TOKEN=replace-me
 TELEGRAM_WEBHOOK_SECRET=replace-with-a-random-secret
@@ -47,7 +48,7 @@ docker compose pull postgres caddy
 docker compose up -d
 ```
 
-Для работы сертификата DNS-запись домена должна указывать на сервер, а порты `80` и `443` должны быть доступны извне. PostgreSQL не публикуется наружу. Для production рекомендуется не менее 1 ГБ RAM и 10 ГБ диска.
+Для работы сертификата DNS-запись домена должна указывать на сервер, а порты `80` и заданный в `HTTPS_PORT` порт должны быть доступны извне. PostgreSQL не публикуется наружу. Telegram поддерживает webhook-порты `443`, `80`, `88` и `8443`. Для production рекомендуется не менее 1 ГБ RAM и 10 ГБ диска.
 
 ### Continuous Deployment
 

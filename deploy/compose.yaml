@@ -21,7 +21,7 @@ services:
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__Postgres: Host=postgres;Database=splitmoney;Username=splitmoney;Password=${POSTGRES_PASSWORD}
       Telegram__BotToken: ${TELEGRAM_BOT_TOKEN}
-      Telegram__WebhookUrl: https://${DOMAIN}
+      Telegram__WebhookUrl: https://${DOMAIN}:${HTTPS_PORT:-443}
       Telegram__WebhookSecret: ${TELEGRAM_WEBHOOK_SECRET}
     depends_on:
       postgres:
@@ -40,8 +40,8 @@ services:
       DOMAIN: ${DOMAIN}
     ports:
       - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

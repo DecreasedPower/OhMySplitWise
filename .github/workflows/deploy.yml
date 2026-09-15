@@ -55,7 +55,7 @@ jobs:
     timeout-minutes: 10
     environment:
       name: production
-      url: https://bot.ohmysplitwise.ru/health
+      url: https://bot.ohmysplitwise.ru:8443/health
 
     steps:
       - name: Download production image
@@ -80,4 +80,4 @@ jobs:
         run: ssh deploy@${{ secrets.VPS_HOST }} sudo /opt/ohmysplitwise/deploy.sh /tmp/ohmysplitwise-${{ github.sha }}.tar.gz ${{ github.sha }}
 
       - name: Verify production
-        run: curl --fail --show-error --retry 5 --retry-delay 5 https://bot.ohmysplitwise.ru/health
+        run: curl --fail --show-error --retry 5 --retry-delay 5 https://bot.ohmysplitwise.ru:8443/health

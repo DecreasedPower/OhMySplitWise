@@ -17,6 +17,10 @@ fi
 
 cd "$deploy_dir"
 previous_version=$(awk -F= '$1 == "APP_VERSION" { print $2 }' .env)
+domain=$(awk -F= '$1 == "DOMAIN" { print $2 }' .env)
+https_port=$(awk -F= '$1 == "HTTPS_PORT" { print $2 }' .env)
+https_port=${https_port:-443}
+health_url="https://$domain:$https_port/health"
 
 cleanup_archive() {
     rm -f "$archive"
@@ -38,7 +42,7 @@ gzip -dc "$archive" | docker load
 sed -i "s/^APP_VERSION=.*/APP_VERSION=$version/" .env
 docker compose up -d --no-deps --force-recreate app
 
-if ! timeout 120 bash -c 'until curl --fail --silent --show-error https://bot.ohmysplitwise.ru/health >/dev/null; do sleep 5; done'; then
+if ! timeout 120 bash -c "until curl --fail --silent --show-error '$health_url' >/dev/null; do sleep 5; done"; then
     echo "Health check failed, rolling back to $previous_version" >&2
     sed -i "s/^APP_VERSION=.*/APP_VERSION=$previous_version/" .env
     docker compose up -d --no-deps --force-recreate app
