@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom'
 import { endpoints } from '../api/endpoints'
+import { useIdempotencyKeyStore, type IdempotentSubmission } from '../api/idempotency'
 import { ErrorState, FormError, PageLoader } from '../components/AsyncState'
 import { Money } from '../components/Money'
 import { Page } from '../components/Page'
@@ -18,11 +19,15 @@ export function GroupPage() {
   const { groupId = '' } = useParams()
   const navigate = useNavigate()
   const client = useQueryClient()
+  const keys = useIdempotencyKeyStore()
   const [confirm, setConfirm] = useState(false)
   const query = useQuery({ queryKey: ['group', groupId], queryFn: () => endpoints.group(groupId) })
   const remove = useMutation({
-    mutationFn: () => query.data?.isOwner ? endpoints.deleteGroup(groupId) : endpoints.leaveGroup(groupId),
-    onSuccess: () => { client.removeQueries({ queryKey: ['group', groupId] }); client.invalidateQueries({ queryKey: ['groups'] }); navigate('/', { replace: true }) },
+    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; operation: 'delete' | 'leave'; revision?: number | string }>) => command.operation === 'delete'
+      ? endpoints.deleteGroup(command.groupId, { idempotencyKey: key, groupRevision: command.revision })
+      : endpoints.leaveGroup(command.groupId, { idempotencyKey: key, groupRevision: command.revision }),
+    onSuccess: async (_, { key }) => { keys.settle(key); client.removeQueries({ queryKey: ['group', groupId] }); await client.invalidateQueries({ queryKey: ['groups'] }); navigate('/', { replace: true }) },
+    onError: (error, { key }) => keys.settle(key, error),
   })
   if (query.isPending) return <PageLoader />
   if (query.isError) return <Page title="Группа"><ErrorState error={query.error} retry={() => query.refetch()} /></Page>
@@ -48,7 +53,7 @@ export function GroupPage() {
       <Dialog open={confirm} onClose={() => { if (!remove.isPending) setConfirm(false) }}>
         <DialogTitle>{isOwner ? 'Удалить группу?' : 'Выйти из группы?'}</DialogTitle>
         <DialogContent><Typography color="text.secondary">{isOwner ? 'Группа исчезнет у всех участников. Это действие нельзя отменить.' : 'Выйти можно только с нулевым балансом.'}</Typography><FormError message={remove.error?.message} /></DialogContent>
-        <DialogActions><Button onClick={() => setConfirm(false)} disabled={remove.isPending}>Отмена</Button><Button color="error" onClick={() => { if (!remove.isPending) remove.mutate() }} disabled={remove.isPending}>{remove.isPending ? 'Подождите…' : isOwner ? 'Удалить' : 'Выйти'}</Button></DialogActions>
+        <DialogActions><Button onClick={() => setConfirm(false)} disabled={remove.isPending}>Отмена</Button><Button color="error" onClick={() => { if (!remove.isPending) { const operation = isOwner ? 'delete' as const : 'leave' as const; remove.mutate(keys.bind({ operation, groupId }, { groupId, operation, revision: group.revision })) } }} disabled={remove.isPending}>{remove.isPending ? 'Подождите…' : isOwner ? 'Удалить' : 'Выйти'}</Button></DialogActions>
       </Dialog>
     </Page>
   )

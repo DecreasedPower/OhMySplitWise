@@ -55,9 +55,9 @@ public sealed class MiniAppServiceValidationTests
         var service = CreateService(db);
         var group = await service.CreateGroup(10, new CreateGroupRequest("Trip", GroupType.Standalone), TestContext.Current.CancellationToken);
 
-        var participant = await service.AddParticipant(10, group.Id, new ParticipantRequest("Alice", null), TestContext.Current.CancellationToken);
+        var participant = await service.AddParticipant(10, group.Id, new ParticipantRequest("Alice", null), null, TestContext.Current.CancellationToken);
         var error = await Assert.ThrowsAsync<ApiException>(() => service.AddParticipant(10, group.Id,
-            new ParticipantRequest("alice", null), TestContext.Current.CancellationToken));
+            new ParticipantRequest("alice", null), null, TestContext.Current.CancellationToken));
 
         Assert.True(participant.Id < 0);
         Assert.Equal("duplicate_participant_name", error.Code);
@@ -67,5 +67,5 @@ public sealed class MiniAppServiceValidationTests
         .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
     private static MiniAppService CreateService(AppDbContext db) => new(db, new BalanceService(db),
-        new TelegramBotClient("123456:test-token"), NullLogger<MiniAppService>.Instance);
+        new TelegramBotClient("123456:test-token"), new PostCommitActions(), NullLogger<MiniAppService>.Instance);
 }

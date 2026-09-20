@@ -5,6 +5,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { endpoints } from '../api/endpoints'
+import { useIdempotencyKeyStore, type IdempotentSubmission } from '../api/idempotency'
 import { FormError } from '../components/AsyncState'
 import { Page } from '../components/Page'
 import type { GroupType } from '../domain/types'
@@ -15,15 +16,16 @@ export function CreateGroupPage() {
   const [type, setType] = useState<GroupType>('collective')
   const navigate = useNavigate()
   const client = useQueryClient()
+  const keys = useIdempotencyKeyStore()
   const mutation = useMutation({
-    mutationFn: () => endpoints.createGroup(name.trim(), type),
-    onSuccess: (group) => { client.invalidateQueries({ queryKey: ['groups'] }); notify('success'); navigate(`/groups/${group.id}`, { replace: true }) },
-    onError: () => notify('error'),
+    mutationFn: ({ command, key }: IdempotentSubmission<{ name: string; type: GroupType }>) => endpoints.createGroup(command.name, command.type, { idempotencyKey: key }),
+    onSuccess: async (group, { key }) => { keys.settle(key); await client.invalidateQueries({ queryKey: ['groups'] }); notify('success'); navigate(`/groups/${group.id}`, { replace: true }) },
+    onError: (error, { key }) => { keys.settle(key, error); notify('error') },
   })
   const valid = name.trim().length > 0 && name.trim().length <= 100
   return (
     <Page title="Новая группа" eyebrow="Один шаг">
-      <Stack component="form" spacing={2.5} onSubmit={(event) => { event.preventDefault(); if (valid && !mutation.isPending) mutation.mutate() }}>
+      <Stack component="form" spacing={2.5} onSubmit={(event) => { event.preventDefault(); if (valid && !mutation.isPending) { const command = { name: name.trim(), type }; mutation.mutate(keys.bind(command, command)) } }}>
         <TextField autoFocus label="Название" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 100 }} helperText={`${name.trim().length}/100`} error={name.length > 0 && !valid} />
         <Typography component="h2" id="group-type-label" variant="h3">Как будете вести расходы?</Typography>
         <Stack role="radiogroup" aria-labelledby="group-type-label" spacing={2.5}>

@@ -54,13 +54,19 @@ jobs:
         run: docker build --platform linux/amd64 --tag ohmysplitwise:${{ github.sha }} .
 
       - name: Export production image
-        run: docker save ohmysplitwise:${{ github.sha }} | gzip > ohmysplitwise-${{ github.sha }}.tar.gz
+        run: |
+          docker image inspect ohmysplitwise:${{ github.sha }} --format '{{.Size}}' > image-size.txt
+          docker save ohmysplitwise:${{ github.sha }} | gzip > ohmysplitwise-${{ github.sha }}.tar.gz
+          stat --format='%s' ohmysplitwise-${{ github.sha }}.tar.gz > archive-size.txt
 
       - name: Upload production image
         uses: actions/upload-artifact@v4
         with:
           name: production-image-${{ github.sha }}
-          path: ohmysplitwise-${{ github.sha }}.tar.gz
+          path: |
+            ohmysplitwise-${{ github.sha }}.tar.gz
+            image-size.txt
+            archive-size.txt
           retention-days: 1
           compression-level: 0
 
@@ -73,6 +79,9 @@ jobs:
       url: https://bot.ohmysplitwise.ru:8443/health
 
     steps:
+      - name: Check out deployment script
+        uses: actions/checkout@v4
+
       - name: Download production image
         uses: actions/download-artifact@v4
         with:
@@ -88,11 +97,23 @@ jobs:
           printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
-      - name: Upload production image
-        run: scp ohmysplitwise-${{ github.sha }}.tar.gz deploy@${{ secrets.VPS_HOST }}:/tmp/
+      - name: Install deployment script
+        run: |
+          scp deploy/deploy.sh deploy@${{ secrets.VPS_HOST }}:/tmp/ohmysplitwise-deploy.sh
+          ssh deploy@${{ secrets.VPS_HOST }} 'sudo install -o root -g root -m 755 /tmp/ohmysplitwise-deploy.sh /opt/ohmysplitwise/deploy.sh && rm -f /tmp/ohmysplitwise-deploy.sh'
+
+      - name: Check deployment capacity
+        run: |
+          image_size=$(<image-size.txt)
+          archive_size=$(<archive-size.txt)
+          [[ "$image_size" =~ ^[0-9]+$ && "$archive_size" =~ ^[0-9]+$ ]]
+          ssh deploy@${{ secrets.VPS_HOST }} sudo /opt/ohmysplitwise/deploy.sh --check ${{ github.sha }} "$image_size" "$archive_size"
 
       - name: Deploy with rollback
-        run: ssh deploy@${{ secrets.VPS_HOST }} sudo /opt/ohmysplitwise/deploy.sh /tmp/ohmysplitwise-${{ github.sha }}.tar.gz ${{ github.sha }}
+        run: |
+          image_size=$(<image-size.txt)
+          archive_size=$(<archive-size.txt)
+          ssh deploy@${{ secrets.VPS_HOST }} sudo /opt/ohmysplitwise/deploy.sh --deploy ${{ github.sha }} "$image_size" "$archive_size" < ohmysplitwise-${{ github.sha }}.tar.gz
 
       - name: Verify production
         run: curl --fail --show-error --retry 5 --retry-delay 5 https://bot.ohmysplitwise.ru:8443/health

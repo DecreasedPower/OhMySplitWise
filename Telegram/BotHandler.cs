@@ -135,9 +135,9 @@ public sealed class BotHandler(
         {
             case "group_name":
                 if (text.Length is < 1 or > 100) { await Send(userId, "Название должно содержать от 1 до 100 символов.", ct); return; }
-                var group = new ExpenseGroup { Name = text, OwnerId = userId, Type = data.GroupType };
+                var group = new ExpenseGroup { Name = text, OwnerId = userId, Type = data.GroupType, Revision = 1 };
                 group.Members.Add(new GroupMember { UserId = userId });
-                group.Participants.Add(new GroupParticipant { ParticipantId = userId, TelegramUserId = userId });
+                group.Participants.Add(new GroupParticipant { ParticipantId = userId, TelegramUserId = userId, Version = 1 });
                 db.Groups.Add(group);
                 await db.SaveChangesAsync(ct);
                 await ClearSession(userId, ct);
@@ -145,7 +145,9 @@ public sealed class BotHandler(
                 break;
             case "payment_details":
                 if (text.Length > 500) { await Send(userId, "Реквизиты не должны превышать 500 символов.", ct); return; }
-                (await db.Users.FindAsync([userId], ct))!.PaymentDetails = text;
+                var profile = (await db.Users.FindAsync([userId], ct))!;
+                profile.PaymentDetails = text;
+                profile.Version++;
                 await db.SaveChangesAsync(ct);
                 await ClearSession(userId, ct);
                 await ShowMain(userId, "Реквизиты сохранены.", ct);
@@ -266,11 +268,22 @@ public sealed class BotHandler(
         var group = await db.Groups.FirstOrDefaultAsync(x => x.Id == groupId && x.OwnerId == userId && !x.IsArchived, ct);
         if (group is null) { await ShowGroups(userId, ct); return; }
 
+        var now = DateTimeOffset.UtcNow;
         group.IsArchived = true;
+        group.Revision++;
         var invitations = await db.Invitations.Where(x => x.GroupId == groupId && x.IsActive).ToListAsync(ct);
-        foreach (var invitation in invitations) invitation.IsActive = false;
+        foreach (var invitation in invitations)
+        {
+            invitation.IsActive = false;
+            invitation.RevokedAt = now;
+            invitation.Version++;
+        }
         var transfers = await db.Transfers.Where(x => x.GroupId == groupId && x.Status == TransferStatus.Pending).ToListAsync(ct);
-        foreach (var transfer in transfers) transfer.Status = TransferStatus.Cancelled;
+        foreach (var transfer in transfers)
+        {
+            transfer.Status = TransferStatus.Cancelled;
+            transfer.Version++;
+        }
         await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
         await ClearSession(userId, ct);
@@ -298,29 +311,94 @@ public sealed class BotHandler(
 
     private async Task Invite(long userId, Guid groupId, CancellationToken ct)
     {
-        var group = await MemberGroup(userId, groupId, ct);
-        if (group is null) return;
-        if (group.Type != GroupType.Collective) { await ShowGroup(userId, groupId, ct); return; }
-        var invite = new Invitation { GroupId = groupId, CreatedById = userId, Token = Guid.NewGuid().ToString("N") };
-        db.Invitations.Add(invite);
-        await db.SaveChangesAsync(ct);
+        Invitation invite;
+        string groupName;
+        await using (var transaction = await db.Database.BeginTransactionAsync(ct))
+        {
+            await LockGroup(groupId, ct);
+            var group = await MemberGroup(userId, groupId, ct);
+            if (group is null) return;
+            if (group.Type != GroupType.Collective) { await ShowGroup(userId, groupId, ct); return; }
+            groupName = group.Name;
+
+            var now = DateTimeOffset.UtcNow;
+            var invitations = await db.Invitations.Where(x => x.GroupId == groupId && x.CreatedById == userId && x.IsActive)
+                .OrderByDescending(x => x.CreatedAt).ToListAsync(ct);
+            var changed = false;
+            foreach (var expired in invitations.Where(x => x.ExpiresAt <= now))
+            {
+                expired.IsActive = false;
+                expired.RevokedAt = now;
+                expired.Version++;
+                changed = true;
+            }
+            invite = invitations.FirstOrDefault(x => x.IsActive && x.ExpiresAt > now) ?? new Invitation
+                {
+                    GroupId = groupId,
+                    CreatedById = userId,
+                    Token = Guid.NewGuid().ToString("N"),
+                    ExpiresAt = now.AddDays(7),
+                    Version = 1
+                };
+            if (db.Entry(invite).State == EntityState.Detached)
+            {
+                db.Invitations.Add(invite);
+                changed = true;
+            }
+            if (changed) await IncrementGroupRevision(groupId, ct);
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+        }
         var me = await bot.GetMe(ct);
-        await Send(userId, $"Приглашение в «{group.Name}»:\nhttps://t.me/{me.Username}?start=join_{invite.Token}", ct);
+        await Send(userId, $"Приглашение в «{groupName}»:\nhttps://t.me/{me.Username}?start=join_{invite.Token}", ct);
     }
 
     private async Task Join(long userId, string token, CancellationToken ct)
     {
-        var invite = await db.Invitations.FirstOrDefaultAsync(x => x.Token == token && x.IsActive, ct);
+        var candidate = await db.Invitations.AsNoTracking().FirstOrDefaultAsync(x => x.Token == token, ct);
+        if (candidate is null) { await ShowMain(userId, "Приглашение недействительно.", ct); return; }
+        if (candidate.ExpiresAt <= DateTimeOffset.UtcNow) { await ShowMain(userId, "Срок действия приглашения истек.", ct); return; }
+        if (!candidate.IsActive) { await ShowMain(userId, "Приглашение недействительно.", ct); return; }
+
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await LockGroup(candidate.GroupId, ct);
+        var invite = await db.Invitations.FirstOrDefaultAsync(x => x.Token == token, ct);
         if (invite is null) { await ShowMain(userId, "Приглашение недействительно.", ct); return; }
+        if (invite.ExpiresAt <= DateTimeOffset.UtcNow) { await ShowMain(userId, "Срок действия приглашения истек.", ct); return; }
+        if (!invite.IsActive) { await ShowMain(userId, "Приглашение недействительно.", ct); return; }
         var group = await db.Groups.FindAsync([invite.GroupId], ct);
         if (group is null || group.IsArchived || group.Type != GroupType.Collective) { await ShowMain(userId, "Эта группа не принимает приглашения.", ct); return; }
+        var changed = false;
         var member = await db.GroupMembers.FindAsync([invite.GroupId, userId], ct);
-        if (member is null) db.GroupMembers.Add(new GroupMember { GroupId = invite.GroupId, UserId = userId });
-        else member.IsActive = true;
+        if (member is null)
+        {
+            db.GroupMembers.Add(new GroupMember { GroupId = invite.GroupId, UserId = userId });
+            changed = true;
+        }
+        else if (!member.IsActive)
+        {
+            member.IsActive = true;
+            changed = true;
+        }
         var participant = await db.GroupParticipants.FindAsync([invite.GroupId, userId], ct);
-        if (participant is null) db.GroupParticipants.Add(new GroupParticipant { GroupId = invite.GroupId, ParticipantId = userId, TelegramUserId = userId });
-        else participant.IsActive = true;
-        await db.SaveChangesAsync(ct);
+        if (participant is null)
+        {
+            db.GroupParticipants.Add(new GroupParticipant
+                { GroupId = invite.GroupId, ParticipantId = userId, TelegramUserId = userId, Version = 1 });
+            changed = true;
+        }
+        else if (!participant.IsActive)
+        {
+            participant.IsActive = true;
+            participant.Version++;
+            changed = true;
+        }
+        if (changed)
+        {
+            await IncrementGroupRevision(invite.GroupId, ct);
+            await db.SaveChangesAsync(ct);
+        }
+        await transaction.CommitAsync(ct);
         await ShowGroup(userId, invite.GroupId, ct);
     }
 
@@ -356,8 +434,10 @@ public sealed class BotHandler(
                     GroupId = data.GroupId,
                     ParticipantId = participantId,
                     DisplayName = data.ManagedName,
-                    PaymentDetails = paymentDetails
+                    PaymentDetails = paymentDetails,
+                    Version = 1
                 });
+                await IncrementGroupRevision(data.GroupId, ct);
                 await db.SaveChangesAsync(ct);
                 await transaction.CommitAsync(ct);
             }
@@ -422,18 +502,24 @@ public sealed class BotHandler(
         var context = await RequiredManagedParticipant(userId, ct, "managed_edit_name");
         if (context is not { } edit) return;
         var duplicate = false;
+        var stale = false;
         await using (var transaction = await db.Database.BeginTransactionAsync(ct))
         {
             await LockGroup(edit.Data.GroupId, ct);
-            duplicate = (await Participants(edit.Data.GroupId, ct)).Any(x =>
+            var participant = await RevalidateManagedParticipant(userId, edit.Data, ct);
+            stale = participant is null;
+            duplicate = !stale && (await Participants(edit.Data.GroupId, ct)).Any(x =>
                 x.ParticipantId != edit.Data.ManagedParticipantId && string.Equals(x.DisplayName, name, StringComparison.OrdinalIgnoreCase));
-            if (!duplicate)
+            if (!stale && !duplicate)
             {
-                edit.Participant.DisplayName = name;
+                participant!.DisplayName = name;
+                participant.Version++;
+                await IncrementGroupRevision(edit.Data.GroupId, ct);
                 await db.SaveChangesAsync(ct);
                 await transaction.CommitAsync(ct);
             }
         }
+        if (stale) { await ClearSession(userId, ct); await ShowGroups(userId, ct); return; }
         if (duplicate) { await Send(userId, "Активный участник с таким именем уже существует. Введите другое имя:", ct); return; }
         await ClearSession(userId, ct);
         await Send(userId, $"Имя участника изменено на «{name}».", ct);
@@ -456,10 +542,24 @@ public sealed class BotHandler(
     {
         var context = await RequiredManagedParticipant(userId, ct, "managed_edit_details");
         if (context is not { } edit) return;
-        edit.Participant.PaymentDetails = paymentDetails;
-        await db.SaveChangesAsync(ct);
+        string? participantName = null;
+        await using (var transaction = await db.Database.BeginTransactionAsync(ct))
+        {
+            await LockGroup(edit.Data.GroupId, ct);
+            var participant = await RevalidateManagedParticipant(userId, edit.Data, ct);
+            if (participant is not null)
+            {
+                participant.PaymentDetails = paymentDetails;
+                participant.Version++;
+                participantName = participant.DisplayName;
+                await IncrementGroupRevision(edit.Data.GroupId, ct);
+                await db.SaveChangesAsync(ct);
+                await transaction.CommitAsync(ct);
+            }
+        }
+        if (participantName is null) { await ClearSession(userId, ct); await ShowGroups(userId, ct); return; }
         await ClearSession(userId, ct);
-        await Send(userId, $"Реквизиты участника «{edit.Participant.DisplayName}» обновлены.", ct);
+        await Send(userId, $"Реквизиты участника «{participantName}» обновлены.", ct);
         await ShowParticipants(userId, edit.Data.GroupId, ct);
     }
 
@@ -467,10 +567,24 @@ public sealed class BotHandler(
     {
         var context = await RequiredManagedParticipant(userId, ct, "managed_edit_details");
         if (context is not { } edit) return;
-        edit.Participant.PaymentDetails = null;
-        await db.SaveChangesAsync(ct);
+        string? participantName = null;
+        await using (var transaction = await db.Database.BeginTransactionAsync(ct))
+        {
+            await LockGroup(edit.Data.GroupId, ct);
+            var participant = await RevalidateManagedParticipant(userId, edit.Data, ct);
+            if (participant is not null)
+            {
+                participant.PaymentDetails = null;
+                participant.Version++;
+                participantName = participant.DisplayName;
+                await IncrementGroupRevision(edit.Data.GroupId, ct);
+                await db.SaveChangesAsync(ct);
+                await transaction.CommitAsync(ct);
+            }
+        }
+        if (participantName is null) { await ClearSession(userId, ct); await ShowGroups(userId, ct); return; }
         await ClearSession(userId, ct);
-        await Send(userId, $"Реквизиты участника «{edit.Participant.DisplayName}» удалены.", ct);
+        await Send(userId, $"Реквизиты участника «{participantName}» удалены.", ct);
         await ShowParticipants(userId, edit.Data.GroupId, ct);
     }
 
@@ -504,6 +618,7 @@ public sealed class BotHandler(
             if (!usedInPurchases && participant is not null)
             {
                 db.GroupParticipants.Remove(participant);
+                await IncrementGroupRevision(edit.Data.GroupId, ct);
                 await db.SaveChangesAsync(ct);
                 await transaction.CommitAsync(ct);
                 deleted = true;
@@ -681,17 +796,20 @@ public sealed class BotHandler(
             }
             else if (error is null)
             {
-                expense = new Expense { GroupId = data.GroupId, AuthorId = userId };
+                expense = new Expense { GroupId = data.GroupId, AuthorId = userId, Version = 1 };
                 db.Expenses.Add(expense);
             }
 
             if (error is null)
             {
+                if (data.ExpenseId is not null) expense!.Version++;
                 expense!.Description = data.Description;
                 expense.AmountKopecks = data.AmountKopecks;
                 expense.PayerId = data.PayerId;
-                expense.Shares = data.Shares.Select(x => new ExpenseShare { UserId = x.Key, AmountKopecks = x.Value }).ToList();
+                expense.Shares = data.Shares.Select(x => new ExpenseShare
+                    { GroupId = data.GroupId, UserId = x.Key, AmountKopecks = x.Value }).ToList();
                 await CancelPending(data.GroupId, ct);
+                await IncrementGroupRevision(data.GroupId, ct);
                 await db.SaveChangesAsync(ct);
                 await transaction.CommitAsync(ct);
             }
@@ -750,7 +868,10 @@ public sealed class BotHandler(
         var expense = await db.Expenses.FirstOrDefaultAsync(x => x.Id == expenseId && x.AuthorId == userId, ct);
         if (expense is null) { await Send(userId, "Удалять покупку может только ее автор.", ct); return; }
         if (await MemberGroup(userId, expense.GroupId, ct) is null) { await ShowGroups(userId, ct); return; }
-        db.Expenses.Remove(expense); await CancelPending(expense.GroupId, ct); await db.SaveChangesAsync(ct);
+        db.Expenses.Remove(expense);
+        await CancelPending(expense.GroupId, ct);
+        await IncrementGroupRevision(expense.GroupId, ct);
+        await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
         await ShowExpenses(userId, expense.GroupId, ct);
     }
@@ -793,8 +914,11 @@ public sealed class BotHandler(
         if (suggestion is null) { await Send(userId, "Баланс изменился. Откройте расчет заново.", ct); await ShowGroup(userId, groupId, ct); return; }
         if (await db.Transfers.AnyAsync(x => x.GroupId == groupId && x.FromUserId == userId && x.ToUserId == toUserId && x.Status == TransferStatus.Pending, ct))
         { await Send(userId, "Этот перевод уже ожидает подтверждения.", ct); return; }
-        var transfer = new Transfer { GroupId = groupId, FromUserId = userId, ToUserId = toUserId, AmountKopecks = suggestion.AmountKopecks };
-        db.Transfers.Add(transfer); await db.SaveChangesAsync(ct);
+        var transfer = new Transfer
+            { GroupId = groupId, FromUserId = userId, ToUserId = toUserId, AmountKopecks = suggestion.AmountKopecks, Version = 1 };
+        db.Transfers.Add(transfer);
+        await IncrementGroupRevision(groupId, ct);
+        await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
         var sender = await db.Users.FindAsync([userId], ct);
         await Send(toUserId, $"{sender!.DisplayName} отметил перевод {Money(transfer.AmountKopecks)}. Подтвердите получение:", ct,
@@ -811,7 +935,10 @@ public sealed class BotHandler(
         var transfer = await db.Transfers.FirstOrDefaultAsync(x => x.Id == transferId && x.ToUserId == userId &&
             x.Status == TransferStatus.Pending && db.Groups.Any(g => g.Id == x.GroupId && !g.IsArchived), ct);
         if (transfer is null) { await ShowMain(userId, "Перевод уже обработан или не найден. Выберите действие.", ct); return; }
-        transfer.Status = confirmed ? TransferStatus.Confirmed : TransferStatus.Rejected; transfer.ResolvedAt = DateTimeOffset.UtcNow;
+        transfer.Status = confirmed ? TransferStatus.Confirmed : TransferStatus.Rejected;
+        transfer.ResolvedAt = DateTimeOffset.UtcNow;
+        transfer.Version++;
+        await IncrementGroupRevision(groupId.Value, ct);
         await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
         await Send(userId, confirmed ? "Получение подтверждено." : "Перевод отклонен.", ct);
@@ -829,8 +956,20 @@ public sealed class BotHandler(
         if (balance.GetValueOrDefault(userId) != 0) { await Send(userId, "Сначала закройте свой баланс.", ct); return; }
         (await db.GroupMembers.FindAsync([groupId, userId], ct))!.IsActive = false;
         var participant = await db.GroupParticipants.FindAsync([groupId, userId], ct);
-        if (participant is not null) participant.IsActive = false;
+        if (participant is not null)
+        {
+            participant.IsActive = false;
+            participant.Version++;
+        }
+        var now = DateTimeOffset.UtcNow;
+        foreach (var invitation in await db.Invitations.Where(x => x.GroupId == groupId && x.CreatedById == userId && x.IsActive).ToListAsync(ct))
+        {
+            invitation.IsActive = false;
+            invitation.RevokedAt = now;
+            invitation.Version++;
+        }
         await CancelPending(groupId, ct);
+        await IncrementGroupRevision(groupId, ct);
         await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
         await ShowGroups(userId, ct);
@@ -868,7 +1007,18 @@ public sealed class BotHandler(
     private async Task<bool> HasParticipantPurchases(Guid groupId, long participantId, CancellationToken ct) =>
         await db.Expenses.AnyAsync(x => x.GroupId == groupId &&
             (x.PayerId == participantId || x.Shares.Any(share => share.UserId == participantId)), ct);
-    private async Task CancelPending(Guid groupId, CancellationToken ct) => await db.Transfers.Where(x => x.GroupId == groupId && x.Status == TransferStatus.Pending).ExecuteUpdateAsync(x => x.SetProperty(t => t.Status, TransferStatus.Cancelled), ct);
+    private async Task<GroupParticipant?> RevalidateManagedParticipant(long userId, FlowData data, CancellationToken ct) =>
+        await db.GroupParticipants.FirstOrDefaultAsync(x => x.GroupId == data.GroupId &&
+            x.ParticipantId == data.ManagedParticipantId && x.TelegramUserId == null && x.IsActive &&
+            !x.Group.IsArchived && x.Group.Type == GroupType.Standalone && x.Group.OwnerId == userId, ct);
+    private async Task CancelPending(Guid groupId, CancellationToken ct) => await db.Transfers
+        .Where(x => x.GroupId == groupId && x.Status == TransferStatus.Pending)
+        .ExecuteUpdateAsync(x => x
+            .SetProperty(t => t.Status, TransferStatus.Cancelled)
+            .SetProperty(t => t.Version, t => t.Version + 1), ct);
+    private async Task IncrementGroupRevision(Guid groupId, CancellationToken ct) => await db.Groups
+        .Where(x => x.Id == groupId)
+        .ExecuteUpdateAsync(x => x.SetProperty(g => g.Revision, g => g.Revision + 1), ct);
     private async Task LockGroup(Guid groupId, CancellationToken ct) => await db.Database.ExecuteSqlInterpolatedAsync(
         $"SELECT 1 FROM \"Groups\" WHERE \"Id\" = {groupId} FOR UPDATE", ct);
 

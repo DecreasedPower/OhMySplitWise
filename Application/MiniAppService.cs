@@ -11,6 +11,7 @@ public sealed class MiniAppService(
     AppDbContext db,
     BalanceService balanceService,
     ITelegramBotClient bot,
+    PostCommitActions postCommitActions,
     ILogger<MiniAppService> logger)
 {
     private const long MaximumExpenseKopecks = 1_000_000_000_000;
@@ -42,12 +43,15 @@ public sealed class MiniAppService(
     public async Task<UserProfileDto> GetProfile(long userId, CancellationToken ct) =>
         ToProfile(await db.Users.FindAsync([userId], ct) ?? throw NotFound("User not found."));
 
-    public async Task<UserProfileDto> UpdateProfile(long userId, UpdateProfileRequest request, CancellationToken ct)
+    public async Task<UserProfileDto> UpdateProfile(long userId, UpdateProfileRequest request, long? expectedVersion, CancellationToken ct)
     {
         ValidateOptional(request.PaymentDetails, 500, "Payment details");
         var user = await db.Users.FindAsync([userId], ct) ?? throw NotFound("User not found.");
+        RequireVersion(user.Version, expectedVersion, "profile");
         user.PaymentDetails = NormalizeOptional(request.PaymentDetails);
-        await db.SaveChangesAsync(ct);
+        user.Version++;
+        try { await db.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException) { throw VersionConflict("profile"); }
         return ToProfile(user);
     }
 
@@ -66,7 +70,7 @@ public sealed class MiniAppService(
         var group = await RequireGroup(userId, groupId, ct);
         var summary = await ToGroupSummary(group, userId, ct);
         return new(summary.Id, summary.Name, summary.Type, summary.OwnerId, summary.ParticipantCount,
-            summary.MyBalanceKopecks, summary.TotalExpensesKopecks, group.CreatedAt, group.OwnerId == userId);
+            summary.MyBalanceKopecks, summary.TotalExpensesKopecks, group.CreatedAt, group.OwnerId == userId, group.Revision);
     }
 
     public async Task<GroupDto> CreateGroup(long userId, CreateGroupRequest request, CancellationToken ct)
@@ -78,19 +82,25 @@ public sealed class MiniAppService(
         group.Participants.Add(new GroupParticipant { ParticipantId = userId, TelegramUserId = userId });
         db.Groups.Add(group);
         await db.SaveChangesAsync(ct);
-        return new(group.Id, group.Name, group.Type, group.OwnerId, 1, 0, 0, group.CreatedAt, true);
+        return new(group.Id, group.Name, group.Type, group.OwnerId, 1, 0, 0, group.CreatedAt, true, group.Revision);
     }
 
-    public Task DeleteGroup(long userId, Guid groupId, CancellationToken ct) => WithGroupLock(groupId, async () =>
+    public Task DeleteGroup(long userId, Guid groupId, long? expectedRevision, CancellationToken ct) => WithGroupLock(groupId, expectedRevision, async () =>
     {
         var group = await RequireGroup(userId, groupId, ct);
         if (group.OwnerId != userId) throw Forbidden("Only the group owner can delete it.");
         group.IsArchived = true;
-        foreach (var invitation in await db.Invitations.Where(x => x.GroupId == groupId && x.IsActive).ToListAsync(ct)) invitation.IsActive = false;
+        var now = DateTimeOffset.UtcNow;
+        foreach (var invitation in await db.Invitations.Where(x => x.GroupId == groupId && x.IsActive).ToListAsync(ct))
+        {
+            invitation.IsActive = false;
+            invitation.RevokedAt = now;
+            invitation.Version++;
+        }
         await CancelPending(groupId, ct);
     }, ct);
 
-    public Task LeaveGroup(long userId, Guid groupId, CancellationToken ct) => WithGroupLock(groupId, async () =>
+    public Task LeaveGroup(long userId, Guid groupId, long? expectedRevision, CancellationToken ct) => WithGroupLock(groupId, expectedRevision, async () =>
     {
         var group = await RequireGroup(userId, groupId, ct);
         if (group.Type != GroupType.Collective) throw Validation("Standalone groups cannot be left.", "invalid_group_type");
@@ -100,7 +110,14 @@ public sealed class MiniAppService(
         var member = await db.GroupMembers.FindAsync([groupId, userId], ct) ?? throw NotFound("Membership not found.");
         member.IsActive = false;
         var participant = await db.GroupParticipants.FindAsync([groupId, userId], ct);
-        if (participant is not null) participant.IsActive = false;
+        if (participant is not null) { participant.IsActive = false; participant.Version++; }
+        var now = DateTimeOffset.UtcNow;
+        foreach (var invitation in await db.Invitations.Where(x => x.GroupId == groupId && x.CreatedById == userId && x.IsActive).ToListAsync(ct))
+        {
+            invitation.IsActive = false;
+            invitation.RevokedAt = now;
+            invitation.Version++;
+        }
         await CancelPending(groupId, ct);
     }, ct);
 
@@ -110,11 +127,11 @@ public sealed class MiniAppService(
         var participants = await ParticipantInfos(groupId, true, ct);
         return participants.Select(x => new ParticipantDto(x.Id, x.Name, x.TelegramUserId,
             group.Type == GroupType.Standalone || x.TelegramUserId == userId ? x.PaymentDetails : null,
-            x.TelegramUserId == userId, group.Type == GroupType.Standalone && group.OwnerId == userId && x.TelegramUserId is null)).ToList();
+            x.TelegramUserId == userId, group.Type == GroupType.Standalone && group.OwnerId == userId && x.TelegramUserId is null, x.Version)).ToList();
     }
 
-    public Task<ParticipantDto> AddParticipant(long userId, Guid groupId, ParticipantRequest request, CancellationToken ct) =>
-        WithGroupLock(groupId, async () =>
+    public Task<ParticipantDto> AddParticipant(long userId, Guid groupId, ParticipantRequest request, long? expectedRevision, CancellationToken ct) =>
+        WithGroupLock(groupId, expectedRevision, async () =>
         {
             var group = await RequireStandaloneOwner(userId, groupId, ct);
             var name = ValidateRequired(request.DisplayName, 100, "Participant name");
@@ -129,24 +146,28 @@ public sealed class MiniAppService(
             return ToParticipant(participant, userId, true);
         }, ct);
 
-    public Task<ParticipantDto> UpdateParticipant(long userId, Guid groupId, long participantId, ParticipantRequest request, CancellationToken ct) =>
-        WithGroupLock(groupId, async () =>
+    public Task<ParticipantDto> UpdateParticipant(long userId, Guid groupId, long participantId, ParticipantRequest request,
+        long? expectedVersion, long? expectedRevision, CancellationToken ct) =>
+        WithGroupLock(groupId, expectedRevision, async () =>
         {
             await RequireStandaloneOwner(userId, groupId, ct);
             var participant = await RequireManagedParticipant(groupId, participantId, ct);
+            RequireVersion(participant.Version, expectedVersion, "participant");
             var name = ValidateRequired(request.DisplayName, 100, "Participant name");
             ValidateOptional(request.PaymentDetails, 500, "Payment details");
             if ((await ParticipantInfos(groupId, true, ct)).Any(x => x.Id != participantId && string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)))
                 throw Conflict("An active participant with this name already exists.", "duplicate_participant_name");
             participant.DisplayName = name;
             participant.PaymentDetails = NormalizeOptional(request.PaymentDetails);
+            participant.Version++;
             return ToParticipant(participant, userId, true);
         }, ct);
 
-    public Task DeleteParticipant(long userId, Guid groupId, long participantId, CancellationToken ct) => WithGroupLock(groupId, async () =>
+    public Task DeleteParticipant(long userId, Guid groupId, long participantId, long? expectedVersion, long? expectedRevision, CancellationToken ct) => WithGroupLock(groupId, expectedRevision, async () =>
     {
         await RequireStandaloneOwner(userId, groupId, ct);
         var participant = await RequireManagedParticipant(groupId, participantId, ct);
+        RequireVersion(participant.Version, expectedVersion, "participant");
         if (await db.Expenses.AnyAsync(x => x.GroupId == groupId && (x.PayerId == participantId || x.Shares.Any(s => s.UserId == participantId)), ct))
             throw Conflict("A participant used in expenses cannot be deleted.", "participant_in_use");
         db.GroupParticipants.Remove(participant);
@@ -170,16 +191,18 @@ public sealed class MiniAppService(
         return ToExpense(expense, userId, names, true);
     }
 
-    public Task<ExpenseDto> CreateExpense(long userId, Guid groupId, ExpenseRequest request, CancellationToken ct) =>
-        SaveExpense(userId, groupId, null, request, ct);
+    public Task<ExpenseDto> CreateExpense(long userId, Guid groupId, ExpenseRequest request, long? expectedRevision, CancellationToken ct) =>
+        SaveExpense(userId, groupId, null, request, null, expectedRevision, ct);
 
-    public Task<ExpenseDto> UpdateExpense(long userId, Guid groupId, Guid expenseId, ExpenseRequest request, CancellationToken ct) =>
-        SaveExpense(userId, groupId, expenseId, request, ct);
+    public Task<ExpenseDto> UpdateExpense(long userId, Guid groupId, Guid expenseId, ExpenseRequest request,
+        long? expectedVersion, long? expectedRevision, CancellationToken ct) =>
+        SaveExpense(userId, groupId, expenseId, request, expectedVersion, expectedRevision, ct);
 
-    public Task DeleteExpense(long userId, Guid groupId, Guid expenseId, CancellationToken ct) => WithGroupLock(groupId, async () =>
+    public Task DeleteExpense(long userId, Guid groupId, Guid expenseId, long? expectedVersion, long? expectedRevision, CancellationToken ct) => WithGroupLock(groupId, expectedRevision, async () =>
     {
         await RequireWriteAccess(userId, groupId, ct);
         var expense = await db.Expenses.FirstOrDefaultAsync(x => x.GroupId == groupId && x.Id == expenseId, ct) ?? throw NotFound("Expense not found.");
+        RequireVersion(expense.Version, expectedVersion, "expense");
         if (expense.AuthorId != userId) throw Forbidden("Only the expense author can delete it.");
         db.Expenses.Remove(expense);
         await CancelPending(groupId, ct);
@@ -194,8 +217,8 @@ public sealed class MiniAppService(
         var pending = await db.Transfers.Where(x => x.GroupId == groupId && x.Status == TransferStatus.Pending).ToListAsync(ct);
         var suggestions = BalanceService.Minimize(balances).Select(x =>
         {
-            var from = byId.GetValueOrDefault(x.FromUserId, new(x.FromUserId, x.FromUserId.ToString(), null, null));
-            var to = byId.GetValueOrDefault(x.ToUserId, new(x.ToUserId, x.ToUserId.ToString(), null, null));
+            var from = byId.GetValueOrDefault(x.FromUserId, new(x.FromUserId, x.FromUserId.ToString(), null, null, 0));
+            var to = byId.GetValueOrDefault(x.ToUserId, new(x.ToUserId, x.ToUserId.ToString(), null, null, 0));
             var transfer = pending.FirstOrDefault(t => t.FromUserId == x.FromUserId && t.ToUserId == x.ToUserId);
             return new SuggestedTransferDto(x.FromUserId, from.Name, x.ToUserId, to.Name, x.AmountKopecks,
                 group.Type == GroupType.Standalone || x.FromUserId == userId ? to.PaymentDetails : null,
@@ -203,15 +226,15 @@ public sealed class MiniAppService(
         }).ToList();
         var incoming = pending.Where(x => x.ToUserId == userId).Select(x => new PendingTransferDto(x.Id,
             byId.GetValueOrDefault(x.FromUserId)?.Name ?? x.FromUserId.ToString(),
-            byId.GetValueOrDefault(x.ToUserId)?.Name ?? x.ToUserId.ToString(), x.AmountKopecks, true)).ToList();
+            byId.GetValueOrDefault(x.ToUserId)?.Name ?? x.ToUserId.ToString(), x.AmountKopecks, true, x.Version)).ToList();
         return new(balances.Select(x => new BalanceDto(x.Key, byId.GetValueOrDefault(x.Key)?.Name ?? x.Key.ToString(), x.Value))
-            .OrderByDescending(x => x.AmountKopecks).ToList(), suggestions, incoming);
+            .OrderByDescending(x => x.AmountKopecks).ToList(), suggestions, incoming, group.Revision);
     }
 
-    public async Task MarkPaid(long userId, Guid groupId, MarkPaidRequest request, CancellationToken ct)
+    public async Task MarkPaid(long userId, Guid groupId, MarkPaidRequest request, long? expectedRevision, CancellationToken ct)
     {
         Transfer? created = null;
-        await WithGroupLock(groupId, async () =>
+        await WithGroupLock(groupId, expectedRevision, async () =>
         {
             var group = await RequireGroup(userId, groupId, ct);
             if (group.Type != GroupType.Collective) throw Validation("Transfers are only available in collective groups.", "invalid_group_type");
@@ -225,10 +248,11 @@ public sealed class MiniAppService(
             db.Transfers.Add(created);
         }, ct);
         var sender = await db.Users.FindAsync([userId], ct);
-        await Notify(created!.ToUserId, $"{sender?.DisplayName ?? "Участник"} отметил перевод {Money(created.AmountKopecks)}. Подтвердите получение в приложении.", ct);
+        await NotifyAfterCommit(created!.ToUserId, $"{sender?.DisplayName ?? "Участник"} отметил перевод {Money(created.AmountKopecks)}. Подтвердите получение в приложении.", ct);
     }
 
-    public async Task ResolveTransfer(long userId, Guid groupId, Guid transferId, ResolveTransferRequest request, CancellationToken ct)
+    public async Task ResolveTransfer(long userId, Guid groupId, Guid transferId, ResolveTransferRequest request,
+        long? expectedVersion, long? expectedRevision, CancellationToken ct)
     {
         var confirmed = request.Status switch
         {
@@ -237,30 +261,72 @@ public sealed class MiniAppService(
             _ => throw Validation("Status must be confirmed or rejected.", "invalid_transfer_status")
         };
         Transfer? resolved = null;
-        await WithGroupLock(groupId, async () =>
+        await WithGroupLock(groupId, expectedRevision, async () =>
         {
             if (!await db.Groups.AnyAsync(x => x.Id == groupId && !x.IsArchived, ct))
                 throw NotFound("Group not found.");
             resolved = await db.Transfers.FirstOrDefaultAsync(x => x.Id == transferId && x.GroupId == groupId && x.ToUserId == userId, ct)
                 ?? throw NotFound("Transfer not found.");
+            RequireVersion(resolved.Version, expectedVersion, "transfer");
             if (resolved.Status != TransferStatus.Pending) throw Conflict("Transfer has already been resolved.", "transfer_resolved");
             resolved.Status = confirmed ? TransferStatus.Confirmed : TransferStatus.Rejected;
             resolved.ResolvedAt = DateTimeOffset.UtcNow;
+            resolved.Version++;
         }, ct);
-        await Notify(resolved!.FromUserId, confirmed ? "Получатель подтвердил перевод." : "Получатель не подтвердил перевод.", ct);
+        await NotifyAfterCommit(resolved!.FromUserId, confirmed ? "Получатель подтвердил перевод." : "Получатель не подтвердил перевод.", ct);
     }
 
-    public async Task<InvitationDto> CreateInvitation(long userId, Guid groupId, CancellationToken ct)
+    public async Task<IReadOnlyList<InvitationDto>> GetInvitations(long userId, Guid groupId, CancellationToken ct)
     {
         var group = await RequireGroup(userId, groupId, ct);
         if (group.Type != GroupType.Collective) throw Validation("Invitations are only available in collective groups.", "invalid_group_type");
-        var invitation = new Invitation { GroupId = groupId, CreatedById = userId, Token = Guid.NewGuid().ToString("N") };
-        db.Invitations.Add(invitation);
-        await db.SaveChangesAsync(ct);
         var botUser = await bot.GetMe(ct);
-        var shareUrl = $"https://t.me/{botUser.Username}?start=join_{invitation.Token}";
-        var telegramShareUrl = $"https://t.me/share/url?url={Uri.EscapeDataString(shareUrl)}&text={Uri.EscapeDataString($"Присоединяйтесь к группе «{group.Name}»")}";
-        return new(invitation.Token, shareUrl, telegramShareUrl);
+        var invitations = await db.Invitations.Where(x => x.GroupId == groupId && x.CreatedById == userId && x.IsActive && x.ExpiresAt > DateTimeOffset.UtcNow)
+            .OrderByDescending(x => x.CreatedAt).ToListAsync(ct);
+        return invitations.Select(x => ToInvitation(x, group.Name, botUser.Username!)).ToList();
+    }
+
+    public Task<InvitationDto> CreateInvitation(long userId, Guid groupId, long? expectedRevision, CancellationToken ct) =>
+        WithGroupLock(groupId, expectedRevision, async () =>
+        {
+            var group = await RequireGroup(userId, groupId, ct);
+            if (group.Type != GroupType.Collective) throw Validation("Invitations are only available in collective groups.", "invalid_group_type");
+            var now = DateTimeOffset.UtcNow;
+            var invitations = await db.Invitations.Where(x => x.GroupId == groupId && x.CreatedById == userId && x.IsActive).ToListAsync(ct);
+            foreach (var expired in invitations.Where(x => x.ExpiresAt <= now))
+            {
+                expired.IsActive = false;
+                expired.RevokedAt = now;
+                expired.Version++;
+            }
+            var invitation = invitations.FirstOrDefault(x => x.IsActive && x.ExpiresAt > now);
+            if (invitation is null)
+            {
+                invitation = new Invitation { GroupId = groupId, CreatedById = userId, Token = Guid.NewGuid().ToString("N"), ExpiresAt = now.AddDays(7) };
+                db.Invitations.Add(invitation);
+            }
+            var botUser = await bot.GetMe(ct);
+            return ToInvitation(invitation, group.Name, botUser.Username!);
+        }, ct);
+
+    public Task RevokeInvitation(long userId, Guid groupId, Guid invitationId, long? expectedVersion, long? expectedRevision, CancellationToken ct) =>
+        WithGroupLock(groupId, expectedRevision, async () =>
+        {
+            await RequireGroup(userId, groupId, ct);
+            var invitation = await db.Invitations.FirstOrDefaultAsync(x => x.Id == invitationId && x.GroupId == groupId && x.CreatedById == userId, ct)
+                ?? throw NotFound("Invitation not found.");
+            RequireVersion(invitation.Version, expectedVersion, "invitation");
+            if (!invitation.IsActive) return;
+            invitation.IsActive = false;
+            invitation.RevokedAt = DateTimeOffset.UtcNow;
+            invitation.Version++;
+        }, ct);
+
+    private static InvitationDto ToInvitation(Invitation invitation, string groupName, string botUsername)
+    {
+        var shareUrl = $"https://t.me/{botUsername}?start=join_{invitation.Token}";
+        var telegramShareUrl = $"https://t.me/share/url?url={Uri.EscapeDataString(shareUrl)}&text={Uri.EscapeDataString($"Присоединяйтесь к группе «{groupName}»")}";
+        return new(invitation.Id, invitation.Token, shareUrl, telegramShareUrl, invitation.ExpiresAt, invitation.Version, invitation.IsActive);
     }
 
     public static void ValidateExpense(ExpenseRequest request)
@@ -278,10 +344,11 @@ public sealed class MiniAppService(
         if (total != request.AmountKopecks) throw Validation("Share total must equal the expense amount.", "share_total_mismatch");
     }
 
-    private Task<ExpenseDto> SaveExpense(long userId, Guid groupId, Guid? expenseId, ExpenseRequest request, CancellationToken ct)
+    private Task<ExpenseDto> SaveExpense(long userId, Guid groupId, Guid? expenseId, ExpenseRequest request,
+        long? expectedVersion, long? expectedRevision, CancellationToken ct)
     {
         ValidateExpense(request);
-        return WithGroupLock(groupId, async () =>
+        return WithGroupLock(groupId, expectedRevision, async () =>
         {
             await RequireWriteAccess(userId, groupId, ct);
             var activeIds = await db.GroupParticipants.Where(x => x.GroupId == groupId && x.IsActive).Select(x => x.ParticipantId).ToListAsync(ct);
@@ -292,8 +359,10 @@ public sealed class MiniAppService(
             {
                 expense = await db.Expenses.Include(x => x.Shares).FirstOrDefaultAsync(x => x.GroupId == groupId && x.Id == id, ct)
                     ?? throw NotFound("Expense not found.");
+                RequireVersion(expense.Version, expectedVersion, "expense");
                 if (expense.AuthorId != userId) throw Forbidden("Only the expense author can edit it.");
                 db.ExpenseShares.RemoveRange(expense.Shares);
+                expense.Version++;
             }
             else
             {
@@ -303,7 +372,7 @@ public sealed class MiniAppService(
             expense.Description = request.Description.Trim();
             expense.AmountKopecks = request.AmountKopecks;
             expense.PayerId = request.PayerId;
-            expense.Shares = request.Shares.Select(x => new ExpenseShare { UserId = x.ParticipantId, AmountKopecks = x.AmountKopecks }).ToList();
+            expense.Shares = request.Shares.Select(x => new ExpenseShare { GroupId = groupId, UserId = x.ParticipantId, AmountKopecks = x.AmountKopecks }).ToList();
             await CancelPending(groupId, ct);
             var names = (await ParticipantInfos(groupId, false, ct)).ToDictionary(x => x.Id, x => x.Name);
             return ToExpense(expense, userId, names, true);
@@ -339,7 +408,7 @@ public sealed class MiniAppService(
         return new(group.Id, group.Name, group.Type, group.OwnerId,
             await db.GroupParticipants.CountAsync(x => x.GroupId == group.Id && x.IsActive, ct),
             balances.GetValueOrDefault(userId),
-            await db.Expenses.Where(x => x.GroupId == group.Id).SumAsync(x => (long?)x.AmountKopecks, ct) ?? 0);
+            await db.Expenses.Where(x => x.GroupId == group.Id).SumAsync(x => (long?)x.AmountKopecks, ct) ?? 0, group.Revision);
     }
 
     private async Task<List<ParticipantInfo>> ParticipantInfos(Guid groupId, bool activeOnly, CancellationToken ct)
@@ -347,30 +416,39 @@ public sealed class MiniAppService(
         var query = db.GroupParticipants.Where(x => x.GroupId == groupId);
         if (activeOnly) query = query.Where(x => x.IsActive);
         return (await query.Include(x => x.TelegramUser).ToListAsync(ct)).Select(x => new ParticipantInfo(x.ParticipantId,
-            x.TelegramUser?.DisplayName ?? x.DisplayName ?? "Без имени", x.TelegramUser?.PaymentDetails ?? x.PaymentDetails, x.TelegramUserId))
+            x.TelegramUser?.DisplayName ?? x.DisplayName ?? "Без имени", x.TelegramUser?.PaymentDetails ?? x.PaymentDetails, x.TelegramUserId, x.Version))
             .OrderBy(x => x.Name).ToList();
     }
 
     private async Task CancelPending(Guid groupId, CancellationToken ct)
     {
         foreach (var transfer in await db.Transfers.Where(x => x.GroupId == groupId && x.Status == TransferStatus.Pending).ToListAsync(ct))
+        {
             transfer.Status = TransferStatus.Cancelled;
+            transfer.Version++;
+        }
     }
 
-    private async Task WithGroupLock(Guid groupId, Func<Task> action, CancellationToken ct) =>
-        await WithGroupLock<object?>(groupId, async () => { await action(); return null; }, ct);
+    private async Task WithGroupLock(Guid groupId, long? expectedRevision, Func<Task> action, CancellationToken ct) =>
+        await WithGroupLock<object?>(groupId, expectedRevision, async () => { await action(); return null; }, ct);
 
-    private async Task<T> WithGroupLock<T>(Guid groupId, Func<Task<T>> action, CancellationToken ct)
+    private async Task<T> WithGroupLock<T>(Guid groupId, long? expectedRevision, Func<Task<T>> action, CancellationToken ct)
     {
         IDbContextTransaction? transaction = null;
-        if (db.Database.IsRelational())
+        var ownsTransaction = db.Database.IsRelational() && db.Database.CurrentTransaction is null;
+        if (ownsTransaction)
         {
             transaction = await db.Database.BeginTransactionAsync(ct);
-            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT 1 FROM \"Groups\" WHERE \"Id\" = {groupId} FOR UPDATE", ct);
         }
+        if (db.Database.IsRelational())
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT 1 FROM \"Groups\" WHERE \"Id\" = {groupId} FOR UPDATE", ct);
         try
         {
+            var group = await db.Groups.FindAsync([groupId], ct);
+            if (group is not null && expectedRevision is { } revision && group.Revision != revision)
+                throw Conflict("The group changed. Refresh and try again.", "stale_group_revision");
             var result = await action();
+            if (group is not null) group.Revision++;
             await db.SaveChangesAsync(ct);
             if (transaction is not null) await transaction.CommitAsync(ct);
             return result;
@@ -387,13 +465,19 @@ public sealed class MiniAppService(
         catch (Exception exception) { logger.LogWarning(exception, "Could not send transfer notification to {ChatId}", chatId); }
     }
 
-    private static UserProfileDto ToProfile(AppUser x) => new(x.TelegramId, x.DisplayName, x.Username, x.PaymentDetails);
+    private async Task NotifyAfterCommit(long chatId, string text, CancellationToken ct)
+    {
+        if (db.Database.CurrentTransaction is null) await Notify(chatId, text, ct);
+        else postCommitActions.Add(token => Notify(chatId, text, token));
+    }
+
+    private static UserProfileDto ToProfile(AppUser x) => new(x.TelegramId, x.DisplayName, x.Username, x.PaymentDetails, x.Version);
     private static ParticipantDto ToParticipant(GroupParticipant x, long userId, bool canEdit) =>
         new(x.ParticipantId, x.DisplayName ?? x.TelegramUser?.DisplayName ?? "Без имени", x.TelegramUserId,
-            x.PaymentDetails ?? x.TelegramUser?.PaymentDetails, x.TelegramUserId == userId, canEdit);
+            x.PaymentDetails ?? x.TelegramUser?.PaymentDetails, x.TelegramUserId == userId, canEdit, x.Version);
     private static ExpenseDto ToExpense(Expense x, long userId, IReadOnlyDictionary<long, string> names, bool shares = false) =>
         new(x.Id, x.GroupId, x.Description, x.AmountKopecks, x.PayerId, names.GetValueOrDefault(x.PayerId, x.PayerId.ToString()),
-            x.AuthorId, x.AuthorId == userId, x.CreatedAt, shares ? x.Shares.Select(s => new ExpenseShareDto(s.UserId,
+            x.AuthorId, x.AuthorId == userId, x.CreatedAt, x.Version, shares ? x.Shares.Select(s => new ExpenseShareDto(s.UserId,
                 names.GetValueOrDefault(s.UserId, s.UserId.ToString()), s.AmountKopecks)).ToList() : null);
     private static string Money(long kopecks) => $"{kopecks / 100}.{Math.Abs(kopecks % 100):00} ₽";
     private static string ValidateRequired(string? value, int maxLength, string field)
@@ -412,6 +496,11 @@ public sealed class MiniAppService(
     private static ApiException Forbidden(string detail) => new(403, "Forbidden", detail, "forbidden");
     private static ApiException NotFound(string detail) => new(404, "Not found", detail, "not_found");
     private static ApiException Conflict(string detail, string code) => new(409, "Conflict", detail, code);
+    private static ApiException VersionConflict(string resource) => new(412, "Precondition failed", $"The {resource} changed. Refresh and try again.", "entity_version_conflict");
+    private static void RequireVersion(long current, long? expected, string resource)
+    {
+        if (expected is { } version && current != version) throw VersionConflict(resource);
+    }
 
-    private sealed record ParticipantInfo(long Id, string Name, string? PaymentDetails, long? TelegramUserId);
+    private sealed record ParticipantInfo(long Id, string Name, string? PaymentDetails, long? TelegramUserId, long Version);
 }

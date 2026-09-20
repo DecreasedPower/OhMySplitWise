@@ -2,9 +2,22 @@ import { getInitData } from '../platform/telegram'
 import { expireSession } from './session'
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public code?: string) {
+  public readonly code?: string
+
+  constructor(
+    public status: number,
+    message: string,
+    public readonly problem: Record<string, unknown> = {},
+    public readonly extensions: Record<string, unknown> = {},
+  ) {
     super(message)
+    this.name = 'ApiError'
+    this.code = typeof extensions.code === 'string' ? extensions.code : undefined
   }
+}
+
+export function newIdempotencyKey() {
+  return crypto.randomUUID()
 }
 
 type RequestOptions = Omit<RequestInit, 'body'> & { body?: unknown }
@@ -23,12 +36,25 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
   })
   if (response.status === 204) return undefined as T
   const contentType = response.headers.get('content-type') ?? ''
-  const payload: unknown = contentType.includes('application/json') ? await response.json() : await response.text()
+  const text = await response.text()
+  let payload: unknown = text || undefined
+  if (contentType.includes('json')) {
+    try {
+      payload = text ? JSON.parse(text) : undefined
+    } catch {
+      if (response.ok) throw new ApiError(response.status, 'Некорректный ответ сервера', { raw: text })
+    }
+  }
   if (!response.ok) {
-    const problem = payload as { detail?: string; title?: string; code?: string }
-    const message = problem.detail ?? problem.title ?? String(payload)
+    const problem = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : {}
+    const detail = typeof problem.detail === 'string' ? problem.detail : undefined
+    const title = typeof problem.title === 'string' ? problem.title : undefined
+    const message = detail ?? title ?? (typeof payload === 'string' ? payload : '')
+    const standardFields = new Set(['type', 'title', 'status', 'detail', 'instance', 'extensions'])
+    const nestedExtensions = typeof problem.extensions === 'object' && problem.extensions !== null ? problem.extensions as Record<string, unknown> : {}
+    const extensions = { ...nestedExtensions, ...Object.fromEntries(Object.entries(problem).filter(([key]) => !standardFields.has(key))) }
     if (response.status === 401) expireSession()
-    throw new ApiError(response.status, message || 'Ошибка запроса', problem.code)
+    throw new ApiError(response.status, message || 'Ошибка запроса', problem, extensions)
   }
   return payload as T
 }

@@ -7,6 +7,7 @@ export interface UserProfile {
   displayName: string
   username: string | null
   paymentDetails: string | null
+  version: number | string
 }
 
 export interface GroupSummary {
@@ -17,6 +18,7 @@ export interface GroupSummary {
   participantCount: number
   myBalanceKopecks: MoneyString
   totalExpensesKopecks: MoneyString
+  revision: number | string
 }
 
 export interface Group extends GroupSummary {
@@ -31,6 +33,7 @@ export interface Participant {
   paymentDetails: string | null
   isCurrentUser: boolean
   canEdit: boolean
+  version: number | string
 }
 
 export interface ExpenseShare {
@@ -50,6 +53,7 @@ export interface Expense {
   canEdit: boolean
   createdAt: string
   shares?: ExpenseShare[] | null
+  version: number | string
 }
 
 export interface Balance {
@@ -75,18 +79,24 @@ export interface PendingTransfer {
   toName: string
   amountKopecks: MoneyString
   canResolve: boolean
+  version: number | string
 }
 
 export interface BalanceOverview {
   balances: Balance[]
   suggestions: SuggestedTransfer[]
   pendingTransfers: PendingTransfer[]
+  groupRevision: number | string
 }
 
 export interface Invitation {
+  id: Id
   token: string
   shareUrl: string
   telegramShareUrl: string
+  expiresAt: string
+  version: number | string
+  isActive: boolean
 }
 
 export interface ExpenseInput {

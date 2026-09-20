@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { endpoints } from '../api/endpoints'
+import { useIdempotencyKeyStore, type IdempotentSubmission } from '../api/idempotency'
 import { ErrorState, FormError, PageLoader } from '../components/AsyncState'
 import { Page } from '../components/Page'
 import { validateExpenseDraft, type ExpenseDraft } from '../domain/forms'
@@ -17,9 +18,11 @@ export function ExpenseFormPage() {
   const { groupId = '', expenseId } = useParams()
   const navigate = useNavigate()
   const client = useQueryClient()
+  const keys = useIdempotencyKeyStore()
   const [draft, setDraft] = useState<ExpenseDraft>(emptyDraft)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const participants = useQuery({ queryKey: ['participants', groupId], queryFn: () => endpoints.participants(groupId) })
+  const group = useQuery({ queryKey: ['group', groupId], queryFn: () => endpoints.group(groupId) })
   const expense = useQuery({ queryKey: ['expense', groupId, expenseId], queryFn: () => endpoints.expense(groupId, expenseId!), enabled: Boolean(expenseId) })
 
   useEffect(() => {
@@ -35,20 +38,25 @@ export function ExpenseFormPage() {
   }, [expense.data])
 
   const save = useMutation({
-    mutationFn: (input: ExpenseInput) => expenseId ? endpoints.updateExpense(groupId, expenseId, input) : endpoints.createExpense(groupId, input),
-    onSuccess: (result) => {
-      client.invalidateQueries({ queryKey: ['expenses', groupId] })
-      client.invalidateQueries({ queryKey: ['group', groupId] })
-      client.invalidateQueries({ queryKey: ['groups'] })
-      client.invalidateQueries({ queryKey: ['balances', groupId] })
+    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; expenseId?: string; input: ExpenseInput; version?: number | string; revision?: number | string }>) => command.expenseId
+      ? endpoints.updateExpense(command.groupId, command.expenseId, command.input, { idempotencyKey: key, version: command.version, groupRevision: command.revision })
+      : endpoints.createExpense(command.groupId, command.input, { idempotencyKey: key, groupRevision: command.revision }),
+    onSuccess: async (result, { key }) => {
+      keys.settle(key)
       client.setQueryData(['expense', groupId, result.id], result)
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ['expenses', groupId] }),
+        client.invalidateQueries({ queryKey: ['group', groupId] }),
+        client.invalidateQueries({ queryKey: ['groups'] }),
+        client.invalidateQueries({ queryKey: ['balances', groupId] }),
+      ])
       notify('success')
       navigate(`/groups/${groupId}/expenses/${result.id}`, { replace: true })
     },
-    onError: () => notify('error'),
+    onError: (error, { key }) => { keys.settle(key, error); notify('error') },
   })
-  if (participants.isPending || (expenseId && expense.isPending)) return <PageLoader />
-  if (participants.isError || (expenseId && expense.isError)) return <Page title={expenseId ? 'Изменить покупку' : 'Новая покупка'}><ErrorState error={participants.error ?? expense.error} retry={() => { participants.refetch(); if (expenseId) expense.refetch() }} /></Page>
+  if (participants.isPending || group.isPending || (expenseId && expense.isPending)) return <PageLoader />
+  if (participants.isError || group.isError || (expenseId && expense.isError)) return <Page title={expenseId ? 'Изменить покупку' : 'Новая покупка'}><ErrorState error={participants.error ?? group.error ?? expense.error} retry={() => { participants.refetch(); group.refetch(); if (expenseId) expense.refetch() }} /></Page>
 
   function submit(event: React.FormEvent) {
     event.preventDefault()
@@ -60,7 +68,13 @@ export function ExpenseFormPage() {
     const shares = draft.splitMode === 'equal'
       ? splitEqually(amountKopecks, draft.participantIds)
       : draft.participantIds.map((participantId) => ({ participantId, amountKopecks: parseMoney(draft.manualAmounts[participantId])! }))
-    save.mutate({ description: draft.description.trim(), amountKopecks, payerId: draft.payerId, shares })
+    const input = { description: draft.description.trim(), amountKopecks, payerId: draft.payerId, shares }
+    const intent = { groupId, expenseId, input }
+    save.mutate(keys.bind(intent, {
+      ...intent,
+      version: expense.data?.version,
+      revision: group.data?.revision,
+    }))
   }
 
   const list = participants.data ?? []
