@@ -23,6 +23,7 @@
       ConnectionStrings__Postgres: Host=postgres;Database=splitmoney;Username=splitmoney;Password=${POSTGRES_PASSWORD:-splitmoney}
       Telegram__BotToken: ${TELEGRAM_BOT_TOKEN}
       Telegram__WebhookUrl: ${TELEGRAM_WEBHOOK_URL}
+      Telegram__MiniAppUrl: ${TELEGRAM_MINI_APP_URL:-}
       Telegram__WebhookSecret: ${TELEGRAM_WEBHOOK_SECRET}
     ports:
       - "8080:8080"

@@ -15,7 +15,8 @@ namespace SplitMoneyTg.Telegram;
 public sealed class BotHandler(
     ITelegramBotClient bot,
     AppDbContext db,
-    BalanceService balanceService)
+    BalanceService balanceService,
+    IOptions<TelegramOptions> telegramOptions)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -201,11 +202,14 @@ public sealed class BotHandler(
         }
     }
 
-    private async Task ShowMain(long chatId, string text, CancellationToken ct) => await Send(chatId, text, ct,
-        new InlineKeyboardMarkup([
-            [InlineKeyboardButton.WithCallbackData("👥 Мои группы", "groups"), InlineKeyboardButton.WithCallbackData("➕ Создать группу", "newgroup")],
-            [InlineKeyboardButton.WithCallbackData("💳 Реквизиты", "details")]
-        ]));
+    private async Task ShowMain(long chatId, string text, CancellationToken ct)
+    {
+        var rows = new List<InlineKeyboardButton[]>();
+        if (MiniAppButton("Открыть приложение") is { } miniAppButton) rows.Add([miniAppButton]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("👥 Мои группы", "groups"), InlineKeyboardButton.WithCallbackData("➕ Создать группу", "newgroup")]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("💳 Реквизиты", "details")]);
+        await Send(chatId, text, ct, new InlineKeyboardMarkup(rows));
+    }
 
     private async Task ShowGroups(long userId, CancellationToken ct)
     {
@@ -223,11 +227,11 @@ public sealed class BotHandler(
     {
         var group = await MemberGroup(userId, groupId, ct);
         if (group is null) { await ShowGroups(userId, ct); return; }
-        var rows = new List<InlineKeyboardButton[]>
-        {
-            new[] { InlineKeyboardButton.WithCallbackData("🧾 Добавить покупку", $"expense_new:{group.Id:N}") },
-            new[] { InlineKeyboardButton.WithCallbackData("🛒 Покупки", $"expenses:{group.Id:N}"), InlineKeyboardButton.WithCallbackData("⚖️ Баланс и долги", $"balance:{group.Id:N}") }
-        };
+        var rows = new List<InlineKeyboardButton[]>();
+        if (MiniAppButton("Открыть группу в приложении", $"groups/{group.Id}") is { } miniAppButton)
+            rows.Add([miniAppButton]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("🧾 Добавить покупку", $"expense_new:{group.Id:N}")]);
+        rows.Add([InlineKeyboardButton.WithCallbackData("🛒 Покупки", $"expenses:{group.Id:N}"), InlineKeyboardButton.WithCallbackData("⚖️ Баланс и долги", $"balance:{group.Id:N}")]);
         if (group.Type == GroupType.Collective)
         {
             rows.Add([InlineKeyboardButton.WithCallbackData("✉️ Пригласить", $"invite:{group.Id:N}"), InlineKeyboardButton.WithCallbackData("🚪 Выйти", $"leave:{group.Id:N}")]);
@@ -257,6 +261,8 @@ public sealed class BotHandler(
 
     private async Task DeleteGroup(long userId, Guid groupId, CancellationToken ct)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await LockGroup(groupId, ct);
         var group = await db.Groups.FirstOrDefaultAsync(x => x.Id == groupId && x.OwnerId == userId && !x.IsArchived, ct);
         if (group is null) { await ShowGroups(userId, ct); return; }
 
@@ -266,6 +272,7 @@ public sealed class BotHandler(
         var transfers = await db.Transfers.Where(x => x.GroupId == groupId && x.Status == TransferStatus.Pending).ToListAsync(ct);
         foreach (var transfer in transfers) transfer.Status = TransferStatus.Cancelled;
         await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
         await ClearSession(userId, ct);
         await Send(userId, $"Группа «{group.Name}» удалена.", ct);
         await ShowGroups(userId, ct);
@@ -736,10 +743,15 @@ public sealed class BotHandler(
 
     private async Task DeleteExpense(long userId, Guid expenseId, CancellationToken ct)
     {
+        var groupId = await db.Expenses.Where(x => x.Id == expenseId).Select(x => (Guid?)x.GroupId).FirstOrDefaultAsync(ct);
+        if (groupId is null) { await Send(userId, "Удалять покупку может только ее автор.", ct); return; }
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await LockGroup(groupId.Value, ct);
         var expense = await db.Expenses.FirstOrDefaultAsync(x => x.Id == expenseId && x.AuthorId == userId, ct);
         if (expense is null) { await Send(userId, "Удалять покупку может только ее автор.", ct); return; }
         if (await MemberGroup(userId, expense.GroupId, ct) is null) { await ShowGroups(userId, ct); return; }
         db.Expenses.Remove(expense); await CancelPending(expense.GroupId, ct); await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
         await ShowExpenses(userId, expense.GroupId, ct);
     }
 
@@ -772,6 +784,8 @@ public sealed class BotHandler(
     private async Task MarkPaid(long userId, string payload, CancellationToken ct)
     {
         var split = payload.Split(':'); var groupId = ParseGuid(split[0]); var toUserId = long.Parse(split[1], CultureInfo.InvariantCulture);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await LockGroup(groupId, ct);
         var group = await MemberGroup(userId, groupId, ct);
         if (group is null || group.Type != GroupType.Collective) { await ShowGroup(userId, groupId, ct); return; }
         var suggestions = BalanceService.Minimize(await balanceService.GetBalances(groupId, ct));
@@ -781,6 +795,7 @@ public sealed class BotHandler(
         { await Send(userId, "Этот перевод уже ожидает подтверждения.", ct); return; }
         var transfer = new Transfer { GroupId = groupId, FromUserId = userId, ToUserId = toUserId, AmountKopecks = suggestion.AmountKopecks };
         db.Transfers.Add(transfer); await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
         var sender = await db.Users.FindAsync([userId], ct);
         await Send(toUserId, $"{sender!.DisplayName} отметил перевод {Money(transfer.AmountKopecks)}. Подтвердите получение:", ct,
             new InlineKeyboardMarkup([[InlineKeyboardButton.WithCallbackData("✅ Получено", $"transfer_confirm:{transfer.Id:N}"), InlineKeyboardButton.WithCallbackData("❌ Не получено", $"transfer_reject:{transfer.Id:N}")]]));
@@ -789,17 +804,24 @@ public sealed class BotHandler(
 
     private async Task ResolveTransfer(long userId, Guid transferId, bool confirmed, CancellationToken ct)
     {
+        var groupId = await db.Transfers.Where(x => x.Id == transferId).Select(x => (Guid?)x.GroupId).FirstOrDefaultAsync(ct);
+        if (groupId is null) { await ShowMain(userId, "Перевод уже обработан или не найден. Выберите действие.", ct); return; }
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await LockGroup(groupId.Value, ct);
         var transfer = await db.Transfers.FirstOrDefaultAsync(x => x.Id == transferId && x.ToUserId == userId &&
             x.Status == TransferStatus.Pending && db.Groups.Any(g => g.Id == x.GroupId && !g.IsArchived), ct);
         if (transfer is null) { await ShowMain(userId, "Перевод уже обработан или не найден. Выберите действие.", ct); return; }
         transfer.Status = confirmed ? TransferStatus.Confirmed : TransferStatus.Rejected; transfer.ResolvedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
         await Send(userId, confirmed ? "Получение подтверждено." : "Перевод отклонен.", ct);
         await Send(transfer.FromUserId, confirmed ? "Получатель подтвердил перевод." : "Получатель не подтвердил перевод.", ct);
     }
 
     private async Task LeaveGroup(long userId, Guid groupId, CancellationToken ct)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await LockGroup(groupId, ct);
         var group = await MemberGroup(userId, groupId, ct); if (group is null) return;
         if (group.Type != GroupType.Collective) { await ShowGroup(userId, groupId, ct); return; }
         if (group.OwnerId == userId) { await Send(userId, "Владелец не может выйти из активной группы.", ct); return; }
@@ -808,7 +830,10 @@ public sealed class BotHandler(
         (await db.GroupMembers.FindAsync([groupId, userId], ct))!.IsActive = false;
         var participant = await db.GroupParticipants.FindAsync([groupId, userId], ct);
         if (participant is not null) participant.IsActive = false;
-        await db.SaveChangesAsync(ct); await ShowGroups(userId, ct);
+        await CancelPending(groupId, ct);
+        await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+        await ShowGroups(userId, ct);
     }
 
     private async Task UpsertUser(global::Telegram.Bot.Types.User telegramUser, CancellationToken ct)
@@ -891,6 +916,17 @@ public sealed class BotHandler(
     }
     private async Task Send(long chatId, string text, CancellationToken ct, InlineKeyboardMarkup? markup = null) =>
         await bot.SendMessage(chatId, text, replyMarkup: markup, cancellationToken: ct);
+
+    private InlineKeyboardButton? MiniAppButton(string text, string? path = null)
+    {
+        var configuredUrl = string.IsNullOrWhiteSpace(telegramOptions.Value.MiniAppUrl)
+            ? telegramOptions.Value.WebhookUrl
+            : telegramOptions.Value.MiniAppUrl;
+        var url = string.IsNullOrWhiteSpace(path) ? configuredUrl : $"{configuredUrl.TrimEnd('/')}/{path.TrimStart('/')}";
+        return Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps
+            ? InlineKeyboardButton.WithWebApp(text, new WebAppInfo { Url = uri.ToString() })
+            : null;
+    }
 
     private async Task SendLong(long chatId, string text, CancellationToken ct, InlineKeyboardMarkup? markup = null)
     {

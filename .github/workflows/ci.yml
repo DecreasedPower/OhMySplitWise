@@ -24,6 +24,21 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ClientApp/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: ClientApp
+        run: npm ci
+
+      - name: Check frontend
+        working-directory: ClientApp
+        run: npm run lint && npm test && npm run build
+
       - name: Restore dependencies
         run: dotnet restore SplitMoneyTg.Tests/SplitMoneyTg.Tests.csproj
 

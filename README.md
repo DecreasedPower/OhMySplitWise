@@ -1,6 +1,6 @@
 # SplitMoneyTg
 
-Telegram-бот для учета общих покупок в рублях и сведения долгов между участниками.
+Telegram Mini App для учета общих покупок в рублях и сведения долгов между участниками. Старые сценарии чат-бота сохранены как fallback.
 
 ## Возможности
 
@@ -10,6 +10,7 @@ Telegram-бот для учета общих покупок в рублях и �
 - редактирование и удаление покупки автором;
 - расчет чистых балансов и рекомендуемых переводов;
 - подтверждение перевода отправителем и получателем;
+- React-интерфейс на Material 3 с поддержкой светлой и темной темы Telegram;
 - PostgreSQL, webhook и защита от повторной обработки updates.
 
 ## Запуск
@@ -17,10 +18,34 @@ Telegram-бот для учета общих покупок в рублях и �
 1. Создайте бота через `@BotFather`.
 2. Скопируйте `.env.example` в `.env` и заполните значения.
 3. Направьте публичный HTTPS URL на порт `8080` приложения.
-4. Выполните `docker compose up --build`.
-5. Проверьте `GET /health`, затем откройте бота и отправьте `/start`.
+4. Укажите этот URL в `TELEGRAM_MINI_APP_URL` и настройках Mini App через `@BotFather`.
+5. Выполните `docker compose up --build`.
+6. Проверьте `GET /health`, затем откройте бота и отправьте `/start`.
 
-`TELEGRAM_WEBHOOK_URL` задается без пути: приложение добавляет `/telegram/webhook`. Схема базы обновляется миграциями при старте.
+`TELEGRAM_WEBHOOK_URL` задается без пути: приложение добавляет `/telegram/webhook`. Если `TELEGRAM_MINI_APP_URL` не задан, кнопка приложения использует webhook URL. Схема базы обновляется миграциями при старте.
+
+## Разработка frontend
+
+Frontend находится в `ClientApp/`. Vite проксирует `/api` на `http://localhost:8080`:
+
+```bash
+cd ClientApp
+npm ci
+npm run dev
+```
+
+Для локальной разработки вне Telegram положите валидный `initData` в `sessionStorage` под ключом `tma:initData`. Production API принимает только подписанный Telegram `initData`; пользовательский ID из клиента не считается доверенным.
+
+Проверка frontend:
+
+```bash
+cd ClientApp
+npm run lint
+npm test
+npm run build
+```
+
+Production Docker image собирает React в отдельном Node stage и отдает готовую статику через ASP.NET. Node.js в итоговый image не входит.
 
 ## Production
 
@@ -34,6 +59,7 @@ HTTPS_PORT=443
 APP_VERSION=production
 TELEGRAM_BOT_TOKEN=replace-me
 TELEGRAM_WEBHOOK_SECRET=replace-with-a-random-secret
+TELEGRAM_MINI_APP_URL=https://bot.example.com
 POSTGRES_PASSWORD=replace-with-a-random-password
 ```
 

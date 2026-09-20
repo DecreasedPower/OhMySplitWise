@@ -6,6 +6,15 @@ USER $APP_UID
 WORKDIR /app
 EXPOSE 8080
 
+FROM node:22-alpine AS client-build
+WORKDIR /src/ClientApp
+COPY ["ClientApp/package.json", "ClientApp/package-lock.json", "./"]
+RUN npm ci
+COPY ClientApp/ .
+ARG VITE_TELEGRAM_BOT_URL
+ENV VITE_TELEGRAM_BOT_URL=$VITE_TELEGRAM_BOT_URL
+RUN npm run build
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
@@ -22,4 +31,5 @@ RUN dotnet publish "./SplitMoneyTg.csproj" -c $BUILD_CONFIGURATION -o /app/publi
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
+COPY --from=client-build /src/ClientApp/dist ./wwwroot
 ENTRYPOINT ["dotnet", "SplitMoneyTg.dll"]
