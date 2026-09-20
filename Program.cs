@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using SplitMoneyTg.Api;
 using SplitMoneyTg.Application;
 using SplitMoneyTg.Infrastructure;
@@ -22,7 +23,6 @@ builder.Services.AddScoped<BotHandler>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<TelegramInitDataValidator>();
 builder.Services.AddSingleton<ITelegramBotClient>(sp => new TelegramBotClient(sp.GetRequiredService<IOptions<TelegramOptions>>().Value.BotToken));
-builder.Services.AddHealthChecks();
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.Converters.Add(new LongAsStringJsonConverter());
@@ -60,6 +60,14 @@ app.Use(async (context, next) =>
             extensions: apiException?.Code is { } code ? new Dictionary<string, object?> { ["code"] = code } : null)
             .ExecuteAsync(context);
     }
+    catch (NpgsqlException exception) when (context.Request.Path.StartsWithSegments("/api"))
+    {
+        if (context.Response.HasStarted) throw;
+        context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Api").LogError(exception, "Database is unavailable");
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        await Results.Problem(statusCode: 503, title: "Service unavailable", detail: "The database is temporarily unavailable.",
+            extensions: new Dictionary<string, object?> { ["code"] = "database_unavailable" }).ExecuteAsync(context);
+    }
     catch (Exception exception) when (context.Request.Path.StartsWithSegments("/api") && exception is not OperationCanceledException)
     {
         if (context.Response.HasStarted) throw;
@@ -79,7 +87,17 @@ app.MapPost("/telegram/webhook", async (HttpRequest request, Update update, BotH
     await handler.Handle(update, ct);
     return Results.Ok();
 });
-app.MapHealthChecks("/health");
+app.MapGet("/health", async (AppDbContext db, CancellationToken ct) =>
+{
+    try
+    {
+        return await db.Database.CanConnectAsync(ct) ? Results.Text("Healthy") : Results.StatusCode(503);
+    }
+    catch (Exception exception) when (exception is NpgsqlException or InvalidOperationException)
+    {
+        return Results.StatusCode(503);
+    }
+});
 
 var api = app.MapGroup("/api");
 api.MapGet("/me", (HttpContext context, MiniAppService service, CancellationToken ct) =>

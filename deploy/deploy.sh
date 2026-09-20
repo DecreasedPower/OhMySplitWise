@@ -27,6 +27,13 @@ cleanup_archive() {
 }
 trap cleanup_archive EXIT
 
+docker image prune -a -f >/dev/null
+available_kb=$(df --output=avail -k / | tail -n 1 | tr -d ' ')
+if (( available_kb < 262144 )); then
+    echo "At least 256 MB of free disk space is required; available: ${available_kb} KB" >&2
+    exit 1
+fi
+
 install -d -m 700 "$backup_dir"
 backup="$backup_dir/splitmoney-$version.dump"
 backup_tmp="$backup.tmp"
