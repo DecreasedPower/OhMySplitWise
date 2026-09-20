@@ -97,11 +97,6 @@ jobs:
           printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
 
-      - name: Install deployment script
-        run: |
-          scp deploy/deploy.sh deploy@${{ secrets.VPS_HOST }}:/tmp/ohmysplitwise-deploy.sh
-          ssh deploy@${{ secrets.VPS_HOST }} 'sudo install -o root -g root -m 755 /tmp/ohmysplitwise-deploy.sh /opt/ohmysplitwise/deploy.sh && rm -f /tmp/ohmysplitwise-deploy.sh'
-
       - name: Check deployment capacity
         run: |
           image_size=$(<image-size.txt)
