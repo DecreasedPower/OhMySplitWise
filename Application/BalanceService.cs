@@ -62,11 +62,18 @@ public sealed class BalanceService(AppDbContext db)
         return result;
     }
 
-    public static long[] SplitEqually(long amount, int count)
+    public static IReadOnlyDictionary<long, long> SplitEqually(long amount, IReadOnlyCollection<long> participantIds, long payerId)
     {
-        if (amount <= 0 || count <= 0) throw new ArgumentOutOfRangeException();
-        var result = Enumerable.Repeat(amount / count, count).ToArray();
-        for (var i = 0; i < amount % count; i++) result[i]++;
+        if (amount <= 0 || participantIds.Count == 0) throw new ArgumentOutOfRangeException();
+        var orderedIds = participantIds.Order().ToArray();
+        if (orderedIds.Distinct().Count() != orderedIds.Length)
+            throw new ArgumentException("Participant IDs must be unique.", nameof(participantIds));
+
+        var result = orderedIds.ToDictionary(x => x, _ => amount / orderedIds.Length);
+        var startIndex = Array.IndexOf(orderedIds, payerId);
+        if (startIndex < 0) startIndex = 0;
+        for (var offset = 0; offset < amount % orderedIds.Length; offset++)
+            result[orderedIds[(startIndex + offset) % orderedIds.Length]]++;
         return result;
     }
 

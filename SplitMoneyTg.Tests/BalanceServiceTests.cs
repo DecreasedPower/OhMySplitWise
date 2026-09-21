@@ -11,10 +11,48 @@ public sealed class BalanceServiceTests
     [Fact]
     public void SplitEqually_PreservesEveryKopeck()
     {
-        var shares = BalanceService.SplitEqually(100, 3);
+        var shares = BalanceService.SplitEqually(100, [30, 10, 20], 20);
 
-        Assert.Equal([34L, 33L, 33L], shares);
-        Assert.Equal(100, shares.Sum());
+        Assert.Equal(33, shares[10]);
+        Assert.Equal(34, shares[20]);
+        Assert.Equal(33, shares[30]);
+        Assert.Equal(100, shares.Values.Sum());
+    }
+
+    [Fact]
+    public void SplitEqually_RotatesMultipleRemainderKopecksFromPayer()
+    {
+        var shares = BalanceService.SplitEqually(101, [30, 10, 20], 20);
+
+        Assert.Equal(33, shares[10]);
+        Assert.Equal(34, shares[20]);
+        Assert.Equal(34, shares[30]);
+    }
+
+    [Fact]
+    public void SplitEqually_SymmetricExpensesSettleAllParticipants()
+    {
+        long[] participantIds = [1, 2, 3];
+        var balances = participantIds.ToDictionary(x => x, _ => 0L);
+
+        foreach (var payerId in participantIds)
+        {
+            balances[payerId] += 100_000;
+            foreach (var (participantId, share) in BalanceService.SplitEqually(100_000, participantIds, payerId))
+                balances[participantId] -= share;
+        }
+
+        Assert.All(balances.Values, balance => Assert.Equal(0, balance));
+    }
+
+    [Fact]
+    public void SplitEqually_UsesStableFallbackWhenPayerIsNotIncluded()
+    {
+        var shares = BalanceService.SplitEqually(100, [30, 10, 20], 40);
+
+        Assert.Equal(34, shares[10]);
+        Assert.Equal(33, shares[20]);
+        Assert.Equal(33, shares[30]);
     }
 
     [Fact]
@@ -50,9 +88,7 @@ public sealed class BalanceServiceTests
     public void SplitEqually_CanBeMappedToTelegramIdsWithoutUsingIndexes()
     {
         var userIds = new[] { 368_900_896L, 1_697_173_796L };
-        var amounts = BalanceService.SplitEqually(150_000, userIds.Length);
-        var shares = new Dictionary<long, long>();
-        for (var i = 0; i < userIds.Length; i++) shares[userIds[i]] = amounts[i];
+        var shares = BalanceService.SplitEqually(150_000, userIds, userIds[0]);
 
         Assert.Equal(75_000, shares[368_900_896]);
         Assert.Equal(75_000, shares[1_697_173_796]);

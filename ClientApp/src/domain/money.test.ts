@@ -20,12 +20,46 @@ describe('money utilities', () => {
   })
 
   it('preserves every kopeck in equal splits', () => {
-    const shares = splitEqually('100', ['a', 'b', 'c'])
-    expect(shares.map((share) => share.amountKopecks)).toEqual(['34', '33', '33'])
+    const shares = splitEqually('100', ['30', '10', '20'], '20')
+    expect(shares).toEqual([
+      { participantId: '10', amountKopecks: '33' },
+      { participantId: '20', amountKopecks: '34' },
+      { participantId: '30', amountKopecks: '33' },
+    ])
     expect(sumMoney(shares.map((share) => share.amountKopecks))).toBe(100n)
   })
 
+  it('rotates multiple remainder kopecks from the payer', () => {
+    expect(splitEqually('101', ['30', '10', '20'], '20')).toEqual([
+      { participantId: '10', amountKopecks: '33' },
+      { participantId: '20', amountKopecks: '34' },
+      { participantId: '30', amountKopecks: '34' },
+    ])
+  })
+
+  it('settles symmetric expenses without artificial kopeck debts', () => {
+    const participantIds = ['1', '2', '3']
+    const balances = new Map(participantIds.map((id) => [id, 0n]))
+
+    for (const payerId of participantIds) {
+      balances.set(payerId, balances.get(payerId)! + 100_000n)
+      for (const share of splitEqually('100000', participantIds, payerId)) {
+        balances.set(share.participantId, balances.get(share.participantId)! - BigInt(share.amountKopecks))
+      }
+    }
+
+    expect([...balances.values()]).toEqual([0n, 0n, 0n])
+  })
+
+  it('uses the first stable participant when the payer is not included', () => {
+    expect(splitEqually('100', ['30', '10', '20'], '40')).toEqual([
+      { participantId: '10', amountKopecks: '34' },
+      { participantId: '20', amountKopecks: '33' },
+      { participantId: '30', amountKopecks: '33' },
+    ])
+  })
+
   it('does not create zero-value equal shares', () => {
-    expect(splitEqually('2', ['a', 'b', 'c'])).toEqual([])
+    expect(splitEqually('2', ['1', '2', '3'], '1')).toEqual([])
   })
 })

@@ -94,7 +94,7 @@ export function ExpenseFormPage() {
     if (Object.keys(nextErrors).length) { notify('warning'); return }
     const amountKopecks = parseMoney(draft.amount)!
     const shares = draft.splitMode === 'equal'
-      ? splitEqually(amountKopecks, draft.participantIds)
+      ? splitEqually(amountKopecks, draft.participantIds, draft.payerId)
       : draft.participantIds.map((participantId) => ({ participantId, amountKopecks: parseMoney(draft.manualAmounts[participantId])! }))
     const input = { description: draft.description.trim(), amountKopecks, payerId: draft.payerId, shares }
     const intent = { groupId, expenseId, input }

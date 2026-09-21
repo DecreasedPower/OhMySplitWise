@@ -733,10 +733,10 @@ public sealed class BotHandler(
     {
         var session = await RequiredSession(userId, "expense_participants", ct); if (session is null) return;
         var data = Deserialize(session.DataJson);
-        var amounts = BalanceService.SplitEqually(data.AmountKopecks, data.ParticipantIds.Count);
+        var amounts = BalanceService.SplitEqually(data.AmountKopecks, data.ParticipantIds, data.PayerId);
         data.Shares.Clear();
-        for (var i = 0; i < data.ParticipantIds.Count; i++)
-            data.Shares[data.ParticipantIds[i]] = amounts[i];
+        foreach (var (participantId, amount) in amounts)
+            data.Shares[participantId] = amount;
         await SaveExpense(userId, data, ct);
     }
 

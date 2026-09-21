@@ -23,16 +23,21 @@ export function formatMoney(value: MoneyString, currency = true): string {
   return `${sign}${rubles},${kopecks}${currency ? ' ₽' : ''}`
 }
 
-export function splitEqually(amount: MoneyString, participantIds: string[]) {
-  if (!INTEGER.test(amount) || BigInt(amount) < BigInt(participantIds.length) || participantIds.length === 0) return []
+export function splitEqually(amount: MoneyString, participantIds: string[], payerId: string) {
+  if (!INTEGER.test(amount) || BigInt(amount) < BigInt(participantIds.length) || participantIds.length === 0 || new Set(participantIds).size !== participantIds.length) return []
   const total = BigInt(amount)
-  const count = BigInt(participantIds.length)
+  const orderedIds = [...participantIds].sort((left, right) => BigInt(left) < BigInt(right) ? -1 : BigInt(left) > BigInt(right) ? 1 : 0)
+  const count = BigInt(orderedIds.length)
   const base = total / count
   const remainder = total % count
-  return participantIds.map((participantId, index) => ({
-    participantId,
-    amountKopecks: (base + (BigInt(index) < remainder ? 1n : 0n)).toString(),
-  }))
+  const result = orderedIds.map((participantId) => ({ participantId, amountKopecks: base.toString() }))
+  const payerIndex = orderedIds.indexOf(payerId)
+  const startIndex = payerIndex >= 0 ? payerIndex : 0
+  for (let offset = 0; BigInt(offset) < remainder; offset++) {
+    const index = (startIndex + offset) % result.length
+    result[index].amountKopecks = (BigInt(result[index].amountKopecks) + 1n).toString()
+  }
+  return result
 }
 
 export function sumMoney(values: MoneyString[]): bigint {
