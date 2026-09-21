@@ -33,12 +33,21 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var app = builder.Build();
 
-app.UseRouting();
 app.Use(async (context, next) =>
 {
     context.Response.Headers.CacheControl = "no-store";
     await next(context);
 });
+app.UseDefaultFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = context =>
+    {
+        if (context.Context.Request.Path.StartsWithSegments("/assets"))
+            context.Context.Response.Headers.CacheControl = "public,max-age=31536000,immutable";
+    }
+});
+app.UseRouting();
 app.Use(async (context, next) =>
 {
     try
@@ -117,15 +126,6 @@ app.Use(async (context, next) =>
         await context.RequestServices.GetRequiredService<MiniAppService>().UpsertUser(user, context.RequestAborted);
     }
     await next(context);
-});
-app.UseDefaultFiles();
-app.UseStaticFiles(new StaticFileOptions
-{
-    OnPrepareResponse = context =>
-    {
-        if (context.Context.Request.Path.StartsWithSegments("/assets"))
-            context.Context.Response.Headers.CacheControl = "public,max-age=31536000,immutable";
-    }
 });
 
 app.MapPost("/telegram/webhook", async (HttpRequest request, Update update, BotHandler handler, IOptions<TelegramOptions> options, CancellationToken ct) =>

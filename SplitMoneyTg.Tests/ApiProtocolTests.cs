@@ -22,10 +22,15 @@ public sealed class ApiProtocolTests
     [Fact]
     public async Task Mutations_EnforceProtocolAndPreconditions_AndReplaySuccessfulResponse()
     {
+        var webRoot = Path.Combine(Path.GetTempPath(), $"splitmoney-web-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(webRoot, "assets"));
+        await File.WriteAllTextAsync(Path.Combine(webRoot, "index.html"), "<html>test</html>", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(webRoot, "assets", "app-hash.js"), "window.test = true;", TestContext.Current.CancellationToken);
         await using var postgres = new PostgreSqlBuilder("postgres:17-alpine").Build();
         await postgres.StartAsync(TestContext.Current.CancellationToken);
         await using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
+            builder.UseWebRoot(webRoot);
             builder.UseSetting("ConnectionStrings:Postgres", postgres.GetConnectionString());
             builder.UseSetting("Telegram:BotToken", BotToken);
             builder.UseSetting("Telegram:WebhookSecret", "test-secret");
@@ -108,10 +113,15 @@ public sealed class ApiProtocolTests
         using var missingAsset = await client.GetAsync("/assets/does-not-exist.js", TestContext.Current.CancellationToken);
         Assert.Equal(HttpStatusCode.NotFound, missingAsset.StatusCode);
         AssertNoStore(missingAsset);
+        using var existingAsset = await client.GetAsync("/assets/app-hash.js", TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.OK, existingAsset.StatusCode);
+        Assert.Equal("window.test = true;", await existingAsset.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Contains("immutable", existingAsset.Headers.CacheControl?.ToString());
 
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         Assert.Equal(1, await db.Groups.CountAsync(TestContext.Current.CancellationToken));
+        Directory.Delete(webRoot, recursive: true);
     }
 
     private static readonly Mutation[] Mutations =
