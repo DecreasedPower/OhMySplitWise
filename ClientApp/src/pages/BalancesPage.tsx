@@ -5,6 +5,7 @@ import { Alert, Box, Button, Card, Chip, Divider, IconButton, Stack, Typography 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams } from 'react-router-dom'
 import { endpoints } from '../api/endpoints'
+import { isConcurrencyConflict } from '../api/conflicts'
 import { useIdempotencyKeyStore, type IdempotentSubmission } from '../api/idempotency'
 import { ErrorState, FormError, PageLoader } from '../components/AsyncState'
 import { Money } from '../components/Money'
@@ -24,14 +25,14 @@ export function BalancesPage() {
     client.invalidateQueries({ queryKey: ['groups'] }),
   ])
   const paid = useMutation({
-    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; to: string; revision?: number | string }>) => endpoints.markPaid(command.groupId, command.to, { idempotencyKey: key, groupRevision: command.revision }),
+    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; to: string; revision: number | string }>) => endpoints.markPaid(command.groupId, command.to, { idempotencyKey: key, groupRevision: command.revision }),
     onSuccess: async (_, { key }) => { paidKeys.settle(key); await refresh(); notify('success') },
-    onError: (error, { key }) => { paidKeys.settle(key, error); notify('error') },
+    onError: async (error, { key }) => { paidKeys.settle(key, error); if (isConcurrencyConflict(error)) await refresh(); notify('error') },
   })
   const resolve = useMutation({
-    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; transfer: PendingTransfer; resolution: 'confirmed' | 'rejected'; revision?: number | string }>) => endpoints.resolveTransfer(command.groupId, command.transfer.id, command.resolution, { idempotencyKey: key, version: command.transfer.version, groupRevision: command.revision }),
+    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; transfer: PendingTransfer; resolution: 'confirmed' | 'rejected'; revision: number | string }>) => endpoints.resolveTransfer(command.groupId, command.transfer.id, command.resolution, { idempotencyKey: key, version: command.transfer.version, groupRevision: command.revision }),
     onSuccess: async (_, { key }) => { resolveKeys.settle(key); await refresh(); notify('success') },
-    onError: (error, { key }) => { resolveKeys.settle(key, error); notify('error') },
+    onError: async (error, { key }) => { resolveKeys.settle(key, error); if (isConcurrencyConflict(error)) await refresh(); notify('error') },
   })
   if (query.isPending) return <PageLoader />
   if (query.isError) return <Page title="Баланс"><ErrorState error={query.error} retry={() => query.refetch()} /></Page>

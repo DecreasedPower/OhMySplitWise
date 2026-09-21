@@ -9,17 +9,27 @@ namespace SplitMoneyTg.Api;
 
 public sealed class ApiIdempotencyMiddleware(RequestDelegate next)
 {
+    private const string CurrentProtocol = "2";
     private static readonly TimeSpan Retention = TimeSpan.FromDays(30);
 
     public async Task InvokeAsync(HttpContext context, AppDbContext db, PostCommitActions postCommitActions, IHostApplicationLifetime lifetime)
     {
-        if (!context.Request.Path.StartsWithSegments("/api") || HttpMethods.IsGet(context.Request.Method) ||
-            HttpMethods.IsHead(context.Request.Method) || HttpMethods.IsOptions(context.Request.Method) ||
-            !context.Request.Headers.TryGetValue("Idempotency-Key", out var values))
+        var requirements = context.GetEndpoint()?.Metadata.GetMetadata<MutationRequirements>();
+        if (requirements is null)
         {
             await next(context);
             return;
         }
+
+        if (!context.Request.Headers.TryGetValue("X-Client-Protocol", out var protocol) || protocol.ToString() != CurrentProtocol)
+            throw new ApiException(426, "Upgrade required",
+                "This version of the Mini App is outdated. Close it and open it again.", "client_upgrade_required");
+        if (!context.Request.Headers.TryGetValue("Idempotency-Key", out var values))
+            throw new ApiException(428, "Precondition required", "Idempotency-Key is required for this operation.", "idempotency_key_required");
+        if (requirements.RequiresEntityVersion && !context.Request.Headers.ContainsKey("If-Match"))
+            throw new ApiException(428, "Precondition required", "If-Match is required for this operation.", "entity_version_required");
+        if (requirements.RequiresGroupRevision && !context.Request.Headers.ContainsKey("X-Group-Revision"))
+            throw new ApiException(428, "Precondition required", "X-Group-Revision is required for this operation.", "group_revision_required");
 
         var key = values.ToString().Trim();
         if (key.Length is < 1 or > 100)
@@ -32,7 +42,7 @@ public sealed class ApiIdempotencyMiddleware(RequestDelegate next)
             body = await reader.ReadToEndAsync(context.RequestAborted);
         context.Request.Body.Position = 0;
 
-        var fingerprint = string.Join('\n', context.Request.Method, context.Request.Path.Value,
+        var fingerprint = string.Join('\n', CurrentProtocol, context.Request.Method, context.Request.Path.Value,
             context.Request.Headers.IfMatch.ToString(), context.Request.Headers["X-Group-Revision"].ToString(), body);
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(fingerprint));
         var requestHash = Convert.ToHexStringLower(hashBytes);

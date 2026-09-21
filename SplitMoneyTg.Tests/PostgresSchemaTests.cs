@@ -45,6 +45,13 @@ public sealed class PostgresSchemaTests
             INSERT INTO "ExpenseShares" ("ExpenseId", "UserId", "AmountKopecks")
             VALUES ('20000000-0000-0000-0000-000000000001', 1, 100);
             """, TestContext.Current.CancellationToken);
+        await migrator.MigrateAsync("20260920200206_ReleaseOneDatabaseHardening", TestContext.Current.CancellationToken);
+        await Execute(connection,
+            """
+            INSERT INTO "Invitations" ("Id", "Token", "GroupId", "CreatedById", "IsActive", "CreatedAt")
+            VALUES ('40000000-0000-0000-0000-000000000002', '22222222222222222222222222222222', '10000000-0000-0000-0000-000000000001', 1, true, now() - interval '1 day'),
+                   ('40000000-0000-0000-0000-000000000003', '33333333333333333333333333333333', '10000000-0000-0000-0000-000000000001', 1, true, now());
+            """, TestContext.Current.CancellationToken);
         await migrator.MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
 
         await using (var command = new NpgsqlCommand(
@@ -53,6 +60,29 @@ public sealed class PostgresSchemaTests
         await using (var command = new NpgsqlCommand(
             "SELECT NOT \"IsActive\" AND \"RevokedAt\" IS NOT NULL FROM \"Invitations\" WHERE \"Id\" = '40000000-0000-0000-0000-000000000001'", connection))
             Assert.Equal(true, await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+        await using (var command = new NpgsqlCommand(
+            "SELECT \"Id\" FROM \"Invitations\" WHERE \"GroupId\" = '10000000-0000-0000-0000-000000000001' AND \"CreatedById\" = 1 AND \"IsActive\"", connection))
+            Assert.Equal(Guid.Parse("40000000-0000-0000-0000-000000000003"), await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+        await using (var command = new NpgsqlCommand(
+            "SELECT \"is_nullable\" FROM information_schema.columns WHERE table_name = 'ExpenseShares' AND column_name = 'GroupId'", connection))
+            Assert.Equal("NO", await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+
+        await Execute(connection,
+            """
+            INSERT INTO "Expenses" ("Id", "GroupId", "AuthorId", "PayerId", "Description", "AmountKopecks", "CreatedAt")
+            VALUES ('20000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000001', 1, 1, 'Release one write', 50, now());
+            INSERT INTO "ExpenseShares" ("ExpenseId", "UserId", "AmountKopecks")
+            VALUES ('20000000-0000-0000-0000-000000000002', 1, 50);
+            """, TestContext.Current.CancellationToken);
+        await using (var command = new NpgsqlCommand(
+            "SELECT \"GroupId\" FROM \"ExpenseShares\" WHERE \"ExpenseId\" = '20000000-0000-0000-0000-000000000002'", connection))
+            Assert.Equal(Guid.Parse("10000000-0000-0000-0000-000000000001"), await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+
+        await Assert.ThrowsAsync<PostgresException>(() => Execute(connection,
+            """
+            INSERT INTO "Invitations" ("Id", "Token", "GroupId", "CreatedById", "IsActive", "CreatedAt")
+            VALUES ('40000000-0000-0000-0000-000000000004', '44444444444444444444444444444444', '10000000-0000-0000-0000-000000000001', 1, true, now());
+            """, TestContext.Current.CancellationToken));
 
         await Execute(connection,
             """
@@ -79,6 +109,24 @@ public sealed class PostgresSchemaTests
         Assert.Single(outcomes, x => x is null);
         var conflict = Assert.Single(outcomes, x => x is not null);
         Assert.Equal("idempotency_key_reused", Assert.IsType<ApiException>(conflict).Code);
+
+        await migrator.MigrateAsync("20260920200206_ReleaseOneDatabaseHardening", TestContext.Current.CancellationToken);
+        await using (var command = new NpgsqlCommand(
+            "SELECT \"is_nullable\" FROM information_schema.columns WHERE table_name = 'ExpenseShares' AND column_name = 'GroupId'", connection))
+            Assert.Equal("YES", await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+        await using (var command = new NpgsqlCommand(
+            "SELECT count(*) FROM pg_indexes WHERE tablename = 'Invitations' AND indexname = 'IX_Invitations_GroupId_CreatedById'", connection))
+            Assert.Equal(1L, await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+        await Execute(connection,
+            """
+            INSERT INTO "Expenses" ("Id", "GroupId", "AuthorId", "PayerId", "Description", "AmountKopecks", "CreatedAt")
+            VALUES ('20000000-0000-0000-0000-000000000003', '10000000-0000-0000-0000-000000000001', 1, 1, 'Downgrade write', 25, now());
+            INSERT INTO "ExpenseShares" ("ExpenseId", "UserId", "AmountKopecks")
+            VALUES ('20000000-0000-0000-0000-000000000003', 1, 25);
+            """, TestContext.Current.CancellationToken);
+        await using (var command = new NpgsqlCommand(
+            "SELECT \"GroupId\" FROM \"ExpenseShares\" WHERE \"ExpenseId\" = '20000000-0000-0000-0000-000000000003'", connection))
+            Assert.Equal(Guid.Parse("10000000-0000-0000-0000-000000000001"), await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
     }
 
     private static async Task Execute(NpgsqlConnection connection, string sql, CancellationToken ct)
@@ -92,10 +140,13 @@ public sealed class PostgresSchemaTests
         var context = new DefaultHttpContext();
         context.Request.Method = HttpMethods.Post;
         context.Request.Path = "/api/test";
+        context.Request.Headers["X-Client-Protocol"] = "2";
         context.Request.Headers["Idempotency-Key"] = "same-key";
         context.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(body));
         context.Response.Body = new MemoryStream();
         context.Items[typeof(TelegramMiniAppUser)] = new TelegramMiniAppUser(1, "One", null, null);
+        context.SetEndpoint(new Endpoint(_ => Task.CompletedTask,
+            new EndpointMetadataCollection(new MutationRequirements()), "test mutation"));
         try
         {
             await middleware.InvokeAsync(context, db, new PostCommitActions(), new TestHostApplicationLifetime());

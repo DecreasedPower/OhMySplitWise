@@ -77,7 +77,7 @@ public sealed class Expense
 
 public sealed class ExpenseShare
 {
-    public Guid? GroupId { get; set; }
+    public Guid GroupId { get; set; }
     public Guid ExpenseId { get; set; }
     public long UserId { get; set; }
     public long AmountKopecks { get; set; }

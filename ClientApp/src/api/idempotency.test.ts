@@ -50,4 +50,16 @@ describe('IdempotencyKeyStore', () => {
 
     expect(submission.command.shares[0].amount).toBe('100')
   })
+
+  it('keeps snapshot semantics when structuredClone is unavailable', () => {
+    vi.stubGlobal('structuredClone', undefined)
+    const store = new IdempotencyKeyStore(() => 'key-1')
+    const command = { shares: [{ participantId: '1', amount: '100' }], optional: undefined }
+
+    const submission = store.bind({ shares: command.shares }, command)
+    command.shares[0].amount = '200'
+
+    expect(submission.command).toEqual({ shares: [{ participantId: '1', amount: '100' }], optional: undefined })
+    vi.unstubAllGlobals()
+  })
 })

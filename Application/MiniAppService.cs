@@ -446,7 +446,8 @@ public sealed class MiniAppService(
         {
             var group = await db.Groups.FindAsync([groupId], ct);
             if (group is not null && expectedRevision is { } revision && group.Revision != revision)
-                throw Conflict("The group changed. Refresh and try again.", "stale_group_revision");
+                throw new ApiException(409, "Conflict", "The group changed. Refresh and try again.", "stale_group_revision",
+                    new Dictionary<string, object?> { ["currentGroupRevision"] = group.Revision });
             var result = await action();
             if (group is not null) group.Revision++;
             await db.SaveChangesAsync(ct);
@@ -496,10 +497,12 @@ public sealed class MiniAppService(
     private static ApiException Forbidden(string detail) => new(403, "Forbidden", detail, "forbidden");
     private static ApiException NotFound(string detail) => new(404, "Not found", detail, "not_found");
     private static ApiException Conflict(string detail, string code) => new(409, "Conflict", detail, code);
-    private static ApiException VersionConflict(string resource) => new(412, "Precondition failed", $"The {resource} changed. Refresh and try again.", "entity_version_conflict");
+    private static ApiException VersionConflict(string resource, long? currentVersion = null) => new(412, "Precondition failed",
+        $"The {resource} changed. Refresh and try again.", "entity_version_conflict",
+        currentVersion is null ? null : new Dictionary<string, object?> { ["currentVersion"] = currentVersion });
     private static void RequireVersion(long current, long? expected, string resource)
     {
-        if (expected is { } version && current != version) throw VersionConflict(resource);
+        if (expected is { } version && current != version) throw VersionConflict(resource, current);
     }
 
     private sealed record ParticipantInfo(long Id, string Name, string? PaymentDetails, long? TelegramUserId, long Version);

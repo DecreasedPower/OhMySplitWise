@@ -3,8 +3,9 @@ import EditRounded from '@mui/icons-material/EditRounded'
 import PersonRounded from '@mui/icons-material/PersonRounded'
 import { Avatar, Box, Button, Card, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, TextField, Typography } from '@mui/material'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import { isConcurrencyConflict } from '../api/conflicts'
 import { endpoints } from '../api/endpoints'
 import { useIdempotencyKeyStore, type IdempotentSubmission } from '../api/idempotency'
 import { ErrorState, FormError, PageLoader } from '../components/AsyncState'
@@ -19,14 +20,19 @@ export function ParticipantsPage() {
   const [deleting, setDeleting] = useState<Participant | null>(null)
   const query = useQuery({ queryKey: ['participants', groupId], queryFn: () => endpoints.participants(groupId) })
   const group = useQuery({ queryKey: ['group', groupId], queryFn: () => endpoints.group(groupId) })
+  useEffect(() => {
+    if (!query.data) return
+    setEditing((current) => current && current !== 'new' ? query.data.find((person) => person.id === current.id) ?? current : current)
+    setDeleting((current) => current ? query.data.find((person) => person.id === current.id) ?? current : current)
+  }, [query.data])
   const remove = useMutation({
-    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; person: Participant; revision?: number | string }>) => endpoints.deleteParticipant(command.groupId, command.person.id, { idempotencyKey: key, version: command.person.version, groupRevision: command.revision }),
+    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; person: Participant; revision: number | string }>) => endpoints.deleteParticipant(command.groupId, command.person.id, { idempotencyKey: key, version: command.person.version, groupRevision: command.revision }),
     onSuccess: async (_, { key }) => {
       removeKeys.settle(key)
       await refreshParticipantProjections(client, groupId)
       setDeleting(null)
     },
-    onError: (error, { key }) => removeKeys.settle(key, error),
+    onError: async (error, { key }) => { removeKeys.settle(key, error); if (isConcurrencyConflict(error)) await refreshParticipantProjections(client, groupId) },
   })
   if (query.isPending || group.isPending) return <PageLoader />
   if (query.isError || group.isError) return <Page title="Участники"><ErrorState error={query.error ?? group.error} retry={() => { query.refetch(); group.refetch() }} /></Page>
@@ -56,7 +62,7 @@ function ParticipantDialog({ groupId, groupRevision, value, close, onSaved, onDe
       ? endpoints.addParticipant(command.groupId, command.input, { idempotencyKey: key, groupRevision: command.revision })
       : endpoints.updateParticipant(command.groupId, command.participant.id, command.input, { idempotencyKey: key, version: command.participant.version, groupRevision: command.revision }),
     onSuccess: async (_, { key }) => { keys.settle(key); await onSaved(); close() },
-    onError: (error, { key }) => keys.settle(key, error),
+    onError: async (error, { key }) => { keys.settle(key, error); if (isConcurrencyConflict(error)) await onSaved() },
   })
   // Remounting by key in the caller isn't available, so reset fields as a dialog enters.
   const open = value !== null

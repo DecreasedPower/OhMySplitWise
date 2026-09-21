@@ -4,6 +4,7 @@ import { Box, Button, Card, Typography } from '@mui/material'
 import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useSessionExpired } from './api/session'
+import { useClientUpgradeRequired } from './api/upgrade'
 import { PageLoader } from './components/AsyncState'
 import { GroupsPage } from './pages/GroupsPage'
 import { closeTelegram, isTelegram, useTelegramLifecycle } from './platform/telegram'
@@ -21,7 +22,9 @@ const ProfilePage = lazy(() => import('./pages/ProfilePage').then((module) => ({
 export function App() {
   useTelegramLifecycle()
   const sessionExpired = useSessionExpired()
+  const upgradeRequired = useClientUpgradeRequired()
   if (!isTelegram() && import.meta.env.PROD) return <OutsideTelegram />
+  if (upgradeRequired) return <UpgradeRequired />
   if (sessionExpired) return <ExpiredSession />
   return <Suspense fallback={<PageLoader />}><Routes>
     <Route path="/" element={<GroupsPage />} />
@@ -37,6 +40,16 @@ export function App() {
     <Route path="/profile" element={<ProfilePage />} />
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes></Suspense>
+}
+
+export function UpgradeRequired() {
+  return <Box sx={{ minHeight: '100dvh', display: 'grid', placeItems: 'center', p: 2 }}>
+    <Card sx={{ p: 4, maxWidth: 440, textAlign: 'center' }}>
+      <Typography component="h1" variant="h1">Нужно обновить приложение</Typography>
+      <Typography color="text.secondary" sx={{ mt: 2 }}>Закройте мини-приложение и откройте его снова в Telegram, чтобы продолжить.</Typography>
+      <Button variant="contained" onClick={closeTelegram} sx={{ mt: 3 }}>Закрыть приложение</Button>
+    </Card>
+  </Box>
 }
 
 function ExpiredSession() {

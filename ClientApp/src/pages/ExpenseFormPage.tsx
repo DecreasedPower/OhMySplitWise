@@ -1,8 +1,9 @@
 import CheckCircleRounded from '@mui/icons-material/CheckCircleRounded'
 import { Alert, Button, Checkbox, Chip, FormControl, FormControlLabel, FormHelperText, InputLabel, MenuItem, Radio, RadioGroup, Select, Stack, TextField, Typography } from '@mui/material'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { refreshAfterConflict } from '../api/conflicts'
 import { endpoints } from '../api/endpoints'
 import { useIdempotencyKeyStore, type IdempotentSubmission } from '../api/idempotency'
 import { ErrorState, FormError, PageLoader } from '../components/AsyncState'
@@ -13,6 +14,9 @@ import type { ExpenseInput, Participant } from '../domain/types'
 import { notify } from '../platform/telegram'
 
 const emptyDraft: ExpenseDraft = { description: '', amount: '', payerId: '', participantIds: [], splitMode: 'equal', manualAmounts: {} }
+type ExpenseCommand = { groupId: string; input: ExpenseInput; revision: number | string } & (
+  { expenseId: string; version: number | string } | { expenseId?: never; version?: never }
+)
 
 export function ExpenseFormPage() {
   const { groupId = '', expenseId } = useParams()
@@ -21,12 +25,14 @@ export function ExpenseFormPage() {
   const keys = useIdempotencyKeyStore()
   const [draft, setDraft] = useState<ExpenseDraft>(emptyDraft)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const initializedExpense = useRef<string | undefined>(undefined)
   const participants = useQuery({ queryKey: ['participants', groupId], queryFn: () => endpoints.participants(groupId) })
   const group = useQuery({ queryKey: ['group', groupId], queryFn: () => endpoints.group(groupId) })
   const expense = useQuery({ queryKey: ['expense', groupId, expenseId], queryFn: () => endpoints.expense(groupId, expenseId!), enabled: Boolean(expenseId) })
 
   useEffect(() => {
-    if (!expense.data?.shares) return
+    if (!expense.data?.shares || initializedExpense.current === expense.data.id) return
+    initializedExpense.current = expense.data.id
     setDraft({
       description: expense.data.description,
       amount: kopecksToInput(expense.data.amountKopecks),
@@ -37,8 +43,24 @@ export function ExpenseFormPage() {
     })
   }, [expense.data])
 
+  useEffect(() => {
+    if (!participants.data) return
+    const activeIds = new Set(participants.data.map((participant) => participant.id))
+    setDraft((current) => {
+      const participantIds = current.participantIds.filter((id) => activeIds.has(id))
+      const payerId = activeIds.has(current.payerId) ? current.payerId : ''
+      if (payerId === current.payerId && participantIds.length === current.participantIds.length) return current
+      return {
+        ...current,
+        payerId,
+        participantIds,
+        manualAmounts: Object.fromEntries(Object.entries(current.manualAmounts).filter(([id]) => activeIds.has(id))),
+      }
+    })
+  }, [participants.data])
+
   const save = useMutation({
-    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; expenseId?: string; input: ExpenseInput; version?: number | string; revision?: number | string }>) => command.expenseId
+    mutationFn: ({ command, key }: IdempotentSubmission<ExpenseCommand>) => command.expenseId
       ? endpoints.updateExpense(command.groupId, command.expenseId, command.input, { idempotencyKey: key, version: command.version, groupRevision: command.revision })
       : endpoints.createExpense(command.groupId, command.input, { idempotencyKey: key, groupRevision: command.revision }),
     onSuccess: async (result, { key }) => {
@@ -53,7 +75,13 @@ export function ExpenseFormPage() {
       notify('success')
       navigate(`/groups/${groupId}/expenses/${result.id}`, { replace: true })
     },
-    onError: (error, { key }) => { keys.settle(key, error); notify('error') },
+    onError: async (error, { key }) => {
+      keys.settle(key, error)
+      await refreshAfterConflict(error, client, expenseId
+        ? [['expense', groupId, expenseId], ['group', groupId], ['participants', groupId]]
+        : [['group', groupId], ['participants', groupId]])
+      notify('error')
+    },
   })
   if (participants.isPending || group.isPending || (expenseId && expense.isPending)) return <PageLoader />
   if (participants.isError || group.isError || (expenseId && expense.isError)) return <Page title={expenseId ? 'Изменить покупку' : 'Новая покупка'}><ErrorState error={participants.error ?? group.error ?? expense.error} retry={() => { participants.refetch(); group.refetch(); if (expenseId) expense.refetch() }} /></Page>
@@ -70,11 +98,13 @@ export function ExpenseFormPage() {
       : draft.participantIds.map((participantId) => ({ participantId, amountKopecks: parseMoney(draft.manualAmounts[participantId])! }))
     const input = { description: draft.description.trim(), amountKopecks, payerId: draft.payerId, shares }
     const intent = { groupId, expenseId, input }
-    save.mutate(keys.bind(intent, {
-      ...intent,
-      version: expense.data?.version,
-      revision: group.data?.revision,
-    }))
+    if (!group.data) return
+    if (expenseId) {
+      if (!expense.data) return
+      save.mutate(keys.bind(intent, { groupId, expenseId, input, version: expense.data.version, revision: group.data.revision }))
+    } else {
+      save.mutate(keys.bind(intent, { groupId, input, revision: group.data.revision }))
+    }
   }
 
   const list = participants.data ?? []

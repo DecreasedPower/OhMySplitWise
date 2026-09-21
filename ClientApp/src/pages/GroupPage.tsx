@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom'
 import { endpoints } from '../api/endpoints'
+import { refreshAfterConflict } from '../api/conflicts'
 import { useIdempotencyKeyStore, type IdempotentSubmission } from '../api/idempotency'
 import { ErrorState, FormError, PageLoader } from '../components/AsyncState'
 import { Money } from '../components/Money'
@@ -23,11 +24,11 @@ export function GroupPage() {
   const [confirm, setConfirm] = useState(false)
   const query = useQuery({ queryKey: ['group', groupId], queryFn: () => endpoints.group(groupId) })
   const remove = useMutation({
-    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; operation: 'delete' | 'leave'; revision?: number | string }>) => command.operation === 'delete'
+    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; operation: 'delete' | 'leave'; revision: number | string }>) => command.operation === 'delete'
       ? endpoints.deleteGroup(command.groupId, { idempotencyKey: key, groupRevision: command.revision })
       : endpoints.leaveGroup(command.groupId, { idempotencyKey: key, groupRevision: command.revision }),
     onSuccess: async (_, { key }) => { keys.settle(key); client.removeQueries({ queryKey: ['group', groupId] }); await client.invalidateQueries({ queryKey: ['groups'] }); navigate('/', { replace: true }) },
-    onError: (error, { key }) => keys.settle(key, error),
+    onError: async (error, { key }) => { keys.settle(key, error); await refreshAfterConflict(error, client, [['group', groupId], ['groups']]) },
   })
   if (query.isPending) return <PageLoader />
   if (query.isError) return <Page title="Группа"><ErrorState error={query.error} retry={() => query.refetch()} /></Page>

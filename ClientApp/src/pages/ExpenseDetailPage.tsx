@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom'
 import { endpoints } from '../api/endpoints'
+import { refreshAfterConflict } from '../api/conflicts'
 import { useIdempotencyKeyStore, type IdempotentSubmission } from '../api/idempotency'
 import { ErrorState, FormError, PageLoader } from '../components/AsyncState'
 import { Money } from '../components/Money'
@@ -19,7 +20,7 @@ export function ExpenseDetailPage() {
   const query = useQuery({ queryKey: ['expense', groupId, expenseId], queryFn: () => endpoints.expense(groupId, expenseId) })
   const group = useQuery({ queryKey: ['group', groupId], queryFn: () => endpoints.group(groupId) })
   const remove = useMutation({
-    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; expenseId: string; version?: number | string; revision?: number | string }>) => endpoints.deleteExpense(command.groupId, command.expenseId, { idempotencyKey: key, version: command.version, groupRevision: command.revision }),
+    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; expenseId: string; version: number | string; revision: number | string }>) => endpoints.deleteExpense(command.groupId, command.expenseId, { idempotencyKey: key, version: command.version, groupRevision: command.revision }),
     onSuccess: async (_, { key }) => {
       keys.settle(key)
       client.removeQueries({ queryKey: ['expense', groupId, expenseId] })
@@ -31,7 +32,7 @@ export function ExpenseDetailPage() {
       ])
       navigate(`/groups/${groupId}/expenses`, { replace: true })
     },
-    onError: (error, { key }) => keys.settle(key, error),
+    onError: async (error, { key }) => { keys.settle(key, error); await refreshAfterConflict(error, client, [['expense', groupId, expenseId], ['group', groupId]]) },
   })
   if (query.isPending || group.isPending) return <PageLoader />
   if (query.isError || group.isError) return <Page title="Покупка"><ErrorState error={query.error ?? group.error} retry={() => { query.refetch(); group.refetch() }} /></Page>

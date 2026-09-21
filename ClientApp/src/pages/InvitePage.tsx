@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { endpoints } from '../api/endpoints'
+import { refreshAfterConflict } from '../api/conflicts'
 import { useIdempotencyKeyStore, type IdempotentSubmission } from '../api/idempotency'
 import { ErrorState, FormError, PageLoader } from '../components/AsyncState'
 import { Page } from '../components/Page'
@@ -22,7 +23,7 @@ export function InvitePage() {
   const invitations = useQuery({ queryKey: ['invitations', groupId], queryFn: () => endpoints.invitations(groupId) })
   const group = useQuery({ queryKey: ['group', groupId], queryFn: () => endpoints.group(groupId) })
   const create = useMutation({
-    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; revision?: number | string }>) => endpoints.createInvitation(command.groupId, { idempotencyKey: key, groupRevision: command.revision }),
+    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; revision: number | string }>) => endpoints.createInvitation(command.groupId, { idempotencyKey: key, groupRevision: command.revision }),
     onSuccess: async (invitation, { key }) => {
       createKeys.settle(key)
       client.setQueryData<Invitation[]>(['invitations', groupId], (current = []) => [...current.filter((item) => item.id !== invitation.id), invitation])
@@ -31,17 +32,17 @@ export function InvitePage() {
       setNow(Date.now())
       notify('success')
     },
-    onError: (error, { key }) => { createKeys.settle(key, error); notify('error') },
+    onError: async (error, { key }) => { createKeys.settle(key, error); await refreshAfterConflict(error, client, [['invitations', groupId], ['group', groupId]]); notify('error') },
   })
   const revoke = useMutation({
-    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; invitation: Invitation; revision?: number | string }>) => endpoints.revokeInvitation(command.groupId, command.invitation.id, { idempotencyKey: key, version: command.invitation.version, groupRevision: command.revision }),
+    mutationFn: ({ command, key }: IdempotentSubmission<{ groupId: string; invitation: Invitation; revision: number | string }>) => endpoints.revokeInvitation(command.groupId, command.invitation.id, { idempotencyKey: key, version: command.invitation.version, groupRevision: command.revision }),
     onSuccess: async (_, { command, key }) => {
       revokeKeys.settle(key)
       client.setQueryData<Invitation[]>(['invitations', groupId], (current = []) => current.map((item) => item.id === command.invitation.id ? { ...item, isActive: false } : item))
       await client.invalidateQueries({ queryKey: ['group', groupId] })
       notify('success')
     },
-    onError: (error, { key }) => { revokeKeys.settle(key, error); notify('error') },
+    onError: async (error, { key }) => { revokeKeys.settle(key, error); await refreshAfterConflict(error, client, [['invitations', groupId], ['group', groupId]]); notify('error') },
   })
   const activeInvitation = invitations.data?.find((item) => item.isActive)
   useEffect(() => {

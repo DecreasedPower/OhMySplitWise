@@ -13,6 +13,15 @@ function fingerprint(value: unknown): string {
   return JSON.stringify(value)
 }
 
+function snapshot<T>(value: T): T {
+  if (typeof globalThis.structuredClone === 'function') return globalThis.structuredClone(value)
+  if (Array.isArray(value)) return value.map(snapshot) as T
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, snapshot(item)])) as T
+  }
+  return value
+}
+
 export class IdempotencyKeyStore {
   private current?: { fingerprint: string; key: string; command: unknown }
 
@@ -21,7 +30,7 @@ export class IdempotencyKeyStore {
   bind<T>(intent: unknown, command: T): IdempotentSubmission<T> {
     const nextFingerprint = fingerprint(intent)
     if (this.current?.fingerprint !== nextFingerprint) {
-      this.current = { fingerprint: nextFingerprint, key: this.createKey(), command: structuredClone(command) }
+      this.current = { fingerprint: nextFingerprint, key: this.createKey(), command: snapshot(command) }
     }
     return { command: this.current.command as T, key: this.current.key }
   }

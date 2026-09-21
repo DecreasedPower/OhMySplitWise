@@ -37,7 +37,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<Invitation>().HasIndex(x => x.Token).IsUnique();
         modelBuilder.Entity<Invitation>().HasOne<ExpenseGroup>().WithMany().HasForeignKey(x => x.GroupId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<Invitation>().HasOne<AppUser>().WithMany().HasForeignKey(x => x.CreatedById).OnDelete(DeleteBehavior.Restrict);
-        modelBuilder.Entity<Invitation>().HasIndex(x => new { x.GroupId, x.CreatedById });
+        modelBuilder.Entity<Invitation>().HasIndex(x => new { x.GroupId, x.CreatedById })
+            .IsUnique().HasFilter("\"IsActive\"").HasDatabaseName("IX_Invitations_OneActivePerCreatorGroup");
         modelBuilder.Entity<Invitation>().Property(x => x.ExpiresAt).HasDefaultValueSql("CURRENT_TIMESTAMP + INTERVAL '7 days'");
         modelBuilder.Entity<Invitation>().Property(x => x.Version).HasDefaultValue(1L).IsConcurrencyToken();
         modelBuilder.Entity<Expense>().HasKey(x => x.Id);

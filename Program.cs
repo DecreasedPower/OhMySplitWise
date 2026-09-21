@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using SplitMoneyTg.Api;
@@ -32,6 +33,12 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 var app = builder.Build();
 
+app.UseRouting();
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    await next(context);
+});
 app.Use(async (context, next) =>
 {
     try
@@ -44,7 +51,6 @@ app.Use(async (context, next) =>
             var validator = context.RequestServices.GetRequiredService<TelegramInitDataValidator>();
             var options = context.RequestServices.GetRequiredService<IOptions<TelegramOptions>>().Value;
             var user = validator.Validate(authorization[4..], options.BotToken);
-            await context.RequestServices.GetRequiredService<MiniAppService>().UpsertUser(user, context.RequestAborted);
             context.Items[typeof(TelegramMiniAppUser)] = user;
         }
         await next(context);
@@ -54,12 +60,36 @@ app.Use(async (context, next) =>
         if (context.Response.HasStarted) throw;
         var apiException = exception as ApiException;
         context.Response.StatusCode = apiException?.StatusCode ?? 400;
+        var extensions = apiException?.Extensions is null
+            ? new Dictionary<string, object?>()
+            : new Dictionary<string, object?>(apiException.Extensions);
+        if (apiException?.Code is { } code) extensions["code"] = code;
         await Results.Problem(
             statusCode: context.Response.StatusCode,
             title: apiException?.Title ?? "Invalid request",
             detail: apiException?.Message ?? "The request body is invalid.",
-            extensions: apiException?.Code is { } code ? new Dictionary<string, object?> { ["code"] = code } : null)
+            extensions: extensions.Count == 0 ? null : extensions)
             .ExecuteAsync(context);
+    }
+    catch (PostgresException exception) when (context.Request.Path.StartsWithSegments("/api") &&
+        exception.SqlState == PostgresErrorCodes.UniqueViolation && exception.ConstraintName == "IX_Invitations_OneActivePerCreatorGroup")
+    {
+        if (context.Response.HasStarted) throw;
+        context.Response.StatusCode = StatusCodes.Status409Conflict;
+        await Results.Problem(statusCode: 409, title: "Conflict", detail: "An active invitation already exists.",
+            extensions: new Dictionary<string, object?> { ["code"] = "active_invitation_exists" }).ExecuteAsync(context);
+    }
+    catch (DbUpdateException exception) when (context.Request.Path.StartsWithSegments("/api") &&
+        exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: "IX_Invitations_OneActivePerCreatorGroup"
+        })
+    {
+        if (context.Response.HasStarted) throw;
+        context.Response.StatusCode = StatusCodes.Status409Conflict;
+        await Results.Problem(statusCode: 409, title: "Conflict", detail: "An active invitation already exists.",
+            extensions: new Dictionary<string, object?> { ["code"] = "active_invitation_exists" }).ExecuteAsync(context);
     }
     catch (NpgsqlException exception) when (context.Request.Path.StartsWithSegments("/api"))
     {
@@ -79,8 +109,24 @@ app.Use(async (context, next) =>
     }
 });
 app.UseMiddleware<ApiIdempotencyMiddleware>();
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api"))
+    {
+        var user = (TelegramMiniAppUser)context.Items[typeof(TelegramMiniAppUser)]!;
+        await context.RequestServices.GetRequiredService<MiniAppService>().UpsertUser(user, context.RequestAborted);
+    }
+    await next(context);
+});
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = context =>
+    {
+        if (context.Context.Request.Path.StartsWithSegments("/assets"))
+            context.Context.Response.Headers.CacheControl = "public,max-age=31536000,immutable";
+    }
+});
 
 app.MapPost("/telegram/webhook", async (HttpRequest request, Update update, BotHandler handler, IOptions<TelegramOptions> options, CancellationToken ct) =>
 {
@@ -105,70 +151,78 @@ var api = app.MapGroup("/api");
 api.MapGet("/me", (HttpContext context, MiniAppService service, CancellationToken ct) =>
     service.GetProfile(CurrentUser(context), ct));
 api.MapPatch("/me", (HttpContext context, UpdateProfileRequest request, MiniAppService service, CancellationToken ct) =>
-    service.UpdateProfile(CurrentUser(context), request, HeaderVersion(context, "If-Match"), ct));
+    service.UpdateProfile(CurrentUser(context), request, HeaderVersion(context, "If-Match"), ct))
+    .WithMetadata(new MutationRequirements(RequiresEntityVersion: true));
 api.MapGet("/groups", (HttpContext context, MiniAppService service, CancellationToken ct) =>
     service.GetGroups(CurrentUser(context), ct));
 api.MapPost("/groups", (HttpContext context, CreateGroupRequest request, MiniAppService service, CancellationToken ct) =>
-    service.CreateGroup(CurrentUser(context), request, ct));
+    service.CreateGroup(CurrentUser(context), request, ct))
+    .WithMetadata(new MutationRequirements());
 api.MapGet("/groups/{groupId:guid}", (HttpContext context, Guid groupId, MiniAppService service, CancellationToken ct) =>
     service.GetGroup(CurrentUser(context), groupId, ct));
 api.MapDelete("/groups/{groupId:guid}", async (HttpContext context, Guid groupId, MiniAppService service, CancellationToken ct) =>
 {
     await service.DeleteGroup(CurrentUser(context), groupId, HeaderVersion(context, "X-Group-Revision"), ct);
     return Results.NoContent();
-});
+}).WithMetadata(new MutationRequirements(RequiresGroupRevision: true));
 api.MapDelete("/groups/{groupId:guid}/membership", async (HttpContext context, Guid groupId, MiniAppService service, CancellationToken ct) =>
 {
     await service.LeaveGroup(CurrentUser(context), groupId, HeaderVersion(context, "X-Group-Revision"), ct);
     return Results.NoContent();
-});
+}).WithMetadata(new MutationRequirements(RequiresGroupRevision: true));
 api.MapGet("/groups/{groupId:guid}/participants", (HttpContext context, Guid groupId, MiniAppService service, CancellationToken ct) =>
     service.GetParticipants(CurrentUser(context), groupId, ct));
 api.MapPost("/groups/{groupId:guid}/participants", (HttpContext context, Guid groupId, ParticipantRequest request, MiniAppService service, CancellationToken ct) =>
-    service.AddParticipant(CurrentUser(context), groupId, request, HeaderVersion(context, "X-Group-Revision"), ct));
+    service.AddParticipant(CurrentUser(context), groupId, request, HeaderVersion(context, "X-Group-Revision"), ct))
+    .WithMetadata(new MutationRequirements(RequiresGroupRevision: true));
 api.MapPatch("/groups/{groupId:guid}/participants/{participantId:long}", (HttpContext context, Guid groupId, long participantId, ParticipantRequest request, MiniAppService service, CancellationToken ct) =>
-    service.UpdateParticipant(CurrentUser(context), groupId, participantId, request, HeaderVersion(context, "If-Match"), HeaderVersion(context, "X-Group-Revision"), ct));
+    service.UpdateParticipant(CurrentUser(context), groupId, participantId, request, HeaderVersion(context, "If-Match"), HeaderVersion(context, "X-Group-Revision"), ct))
+    .WithMetadata(new MutationRequirements(true, true));
 api.MapDelete("/groups/{groupId:guid}/participants/{participantId:long}", async (HttpContext context, Guid groupId, long participantId, MiniAppService service, CancellationToken ct) =>
 {
     await service.DeleteParticipant(CurrentUser(context), groupId, participantId, HeaderVersion(context, "If-Match"), HeaderVersion(context, "X-Group-Revision"), ct);
     return Results.NoContent();
-});
+}).WithMetadata(new MutationRequirements(true, true));
 api.MapGet("/groups/{groupId:guid}/expenses", (HttpContext context, Guid groupId, MiniAppService service, CancellationToken ct) =>
     service.GetExpenses(CurrentUser(context), groupId, ct));
 api.MapPost("/groups/{groupId:guid}/expenses", (HttpContext context, Guid groupId, ExpenseRequest request, MiniAppService service, CancellationToken ct) =>
-    service.CreateExpense(CurrentUser(context), groupId, request, HeaderVersion(context, "X-Group-Revision"), ct));
+    service.CreateExpense(CurrentUser(context), groupId, request, HeaderVersion(context, "X-Group-Revision"), ct))
+    .WithMetadata(new MutationRequirements(RequiresGroupRevision: true));
 api.MapGet("/groups/{groupId:guid}/expenses/{expenseId:guid}", (HttpContext context, Guid groupId, Guid expenseId, MiniAppService service, CancellationToken ct) =>
     service.GetExpense(CurrentUser(context), groupId, expenseId, ct));
 api.MapPut("/groups/{groupId:guid}/expenses/{expenseId:guid}", (HttpContext context, Guid groupId, Guid expenseId, ExpenseRequest request, MiniAppService service, CancellationToken ct) =>
-    service.UpdateExpense(CurrentUser(context), groupId, expenseId, request, HeaderVersion(context, "If-Match"), HeaderVersion(context, "X-Group-Revision"), ct));
+    service.UpdateExpense(CurrentUser(context), groupId, expenseId, request, HeaderVersion(context, "If-Match"), HeaderVersion(context, "X-Group-Revision"), ct))
+    .WithMetadata(new MutationRequirements(true, true));
 api.MapDelete("/groups/{groupId:guid}/expenses/{expenseId:guid}", async (HttpContext context, Guid groupId, Guid expenseId, MiniAppService service, CancellationToken ct) =>
 {
     await service.DeleteExpense(CurrentUser(context), groupId, expenseId, HeaderVersion(context, "If-Match"), HeaderVersion(context, "X-Group-Revision"), ct);
     return Results.NoContent();
-});
+}).WithMetadata(new MutationRequirements(true, true));
 api.MapGet("/groups/{groupId:guid}/balances", (HttpContext context, Guid groupId, MiniAppService service, CancellationToken ct) =>
     service.GetBalances(CurrentUser(context), groupId, ct));
 api.MapPost("/groups/{groupId:guid}/transfers", async (HttpContext context, Guid groupId, MarkPaidRequest request, MiniAppService service, CancellationToken ct) =>
 {
     await service.MarkPaid(CurrentUser(context), groupId, request, HeaderVersion(context, "X-Group-Revision"), ct);
     return Results.NoContent();
-});
+}).WithMetadata(new MutationRequirements(RequiresGroupRevision: true));
 api.MapPatch("/groups/{groupId:guid}/transfers/{transferId:guid}", async (HttpContext context, Guid groupId, Guid transferId, ResolveTransferRequest request, MiniAppService service, CancellationToken ct) =>
 {
     await service.ResolveTransfer(CurrentUser(context), groupId, transferId, request, HeaderVersion(context, "If-Match"), HeaderVersion(context, "X-Group-Revision"), ct);
     return Results.NoContent();
-});
+}).WithMetadata(new MutationRequirements(true, true));
 api.MapGet("/groups/{groupId:guid}/invitations", (HttpContext context, Guid groupId, MiniAppService service, CancellationToken ct) =>
     service.GetInvitations(CurrentUser(context), groupId, ct));
 api.MapPost("/groups/{groupId:guid}/invitations", (HttpContext context, Guid groupId, MiniAppService service, CancellationToken ct) =>
-    service.CreateInvitation(CurrentUser(context), groupId, HeaderVersion(context, "X-Group-Revision"), ct));
+    service.CreateInvitation(CurrentUser(context), groupId, HeaderVersion(context, "X-Group-Revision"), ct))
+    .WithMetadata(new MutationRequirements(RequiresGroupRevision: true));
 api.MapDelete("/groups/{groupId:guid}/invitations/{invitationId:guid}", async (HttpContext context, Guid groupId, Guid invitationId, MiniAppService service, CancellationToken ct) =>
 {
     await service.RevokeInvitation(CurrentUser(context), groupId, invitationId, HeaderVersion(context, "If-Match"), HeaderVersion(context, "X-Group-Revision"), ct);
     return Results.NoContent();
-});
+}).WithMetadata(new MutationRequirements(true, true));
 api.Map("/{**path}", () => Results.Problem(statusCode: 404, title: "Not found", detail: "API endpoint not found.",
     extensions: new Dictionary<string, object?> { ["code"] = "not_found" }));
+app.Map("/assets/{**path}", () => Results.NotFound());
 
 app.MapFallbackToFile("index.html");
 
@@ -219,3 +273,5 @@ static long? HeaderVersion(HttpContext context, string name)
         throw new BadHttpRequestException($"{name} must contain a positive integer version.");
     return version;
 }
+
+public partial class Program;
