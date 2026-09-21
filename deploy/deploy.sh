@@ -61,7 +61,7 @@ check_capacity() {
     cleanup_stale_images
     install -d -m 700 "$backup_dir"
 
-    database_size=$(docker compose exec -T postgres psql -U splitmoney -d splitmoney -Atqc "SELECT pg_database_size('splitmoney')")
+    database_size=$(docker compose exec -T postgres psql -U splitmoney -d splitmoney -Atqc "SELECT pg_database_size('splitmoney')" </dev/null)
     if [[ ! "$database_size" =~ ^[0-9]+$ ]]; then
         echo "Could not measure the PostgreSQL database" >&2
         exit 1
@@ -126,7 +126,7 @@ install -d -m 700 "$backup_dir"
 backup="$backup_dir/splitmoney-$version.dump"
 backup_tmp="$backup.tmp"
 rm -f "$backup_tmp"
-if ! docker compose exec -T postgres pg_dump -U splitmoney -d splitmoney --format=custom > "$backup_tmp"; then
+if ! docker compose exec -T postgres pg_dump -U splitmoney -d splitmoney --format=custom </dev/null > "$backup_tmp"; then
     rm -f "$backup_tmp"
     exit 1
 fi
