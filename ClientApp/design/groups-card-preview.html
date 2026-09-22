@@ -107,13 +107,15 @@
     }
 
     .name {
+      display: -webkit-box;
       overflow: hidden;
       margin: 0 0 9px;
       font-size: 18px;
       font-weight: 700;
       line-height: 1.25;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
     }
 
     .chip {

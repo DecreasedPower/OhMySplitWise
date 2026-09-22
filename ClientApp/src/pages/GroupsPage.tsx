@@ -25,22 +25,19 @@ export function GroupsPage() {
           </Box>
         ) : query.data.map((group) => (
           <Card key={group.id}>
-            <CardActionArea component={RouterLink} to={`/groups/${group.id}`} sx={{ p: 2.25 }}>
-              <Stack direction="row" spacing={2} alignItems="center">
-                <Avatar sx={{ bgcolor: group.type === 'collective' ? 'primary.main' : 'secondary.main' }}>
+            <CardActionArea component={RouterLink} to={`/groups/${group.id}`} sx={{ p: 2.25, minHeight: 112, '@media (max-width: 350px)': { p: 1.875 } }}>
+              <Stack direction="row" alignItems="center" sx={{ gap: 2, '@media (max-width: 350px)': { gap: '11px' } }}>
+                <Avatar sx={{ bgcolor: group.type === 'collective' ? 'primary.main' : 'secondary.main', '@media (max-width: 350px)': { width: 36, height: 36 } }}>
                   {group.type === 'collective' ? <Groups2Rounded /> : <PersonRounded />}
                 </Avatar>
                 <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="h3" noWrap>{group.name}</Typography>
-                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: .75 }}>
-                    <Chip size="small" label={`${group.type === 'collective' ? 'Общая' : 'Личная'} · ${group.participantCount} участн.`} />
-                    <Typography variant="caption" color="text.secondary">Покупки: <Money component="span" variant="caption" value={group.totalExpensesKopecks} /></Typography>
-                  </Stack>
+                  <Typography variant="h3" sx={{ display: '-webkit-box', overflow: 'hidden', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2 }}>{group.name}</Typography>
+                  <Chip size="small" label={`${group.type === 'collective' ? 'Общая' : 'Личная'} · ${group.participantCount} участн.`} sx={{ mt: .75, maxWidth: '100%' }} />
                 </Box>
-                <Box sx={{ textAlign: 'right' }}>
-                  <Typography variant="caption" color="text.secondary">Ваш баланс</Typography>
-                  <Money value={group.myBalanceKopecks} signed fontWeight={750} />
-                </Box>
+                <Stack spacing={1.5} justifyContent="center" sx={{ alignSelf: 'stretch', minWidth: 114, textAlign: 'right', '@media (max-width: 350px)': { minWidth: 102 } }}>
+                  <Box><Typography variant="caption" color="text.secondary" noWrap>Покупки</Typography><Money variant="body2" value={group.totalExpensesKopecks} fontWeight={750} sx={{ whiteSpace: 'nowrap', '@media (max-width: 350px)': { fontSize: 13 } }} /></Box>
+                  <Box><Typography variant="caption" color="text.secondary" noWrap>Ваш баланс</Typography><Money variant="body2" value={group.myBalanceKopecks} signed fontWeight={750} sx={{ whiteSpace: 'nowrap', '@media (max-width: 350px)': { fontSize: 13 } }} /></Box>
+                </Stack>
               </Stack>
             </CardActionArea>
           </Card>
