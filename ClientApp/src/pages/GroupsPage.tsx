@@ -15,7 +15,7 @@ export function GroupsPage() {
   if (query.isPending) return <PageLoader />
   if (query.isError) return <Page title="Мои группы" back={false}><ErrorState error={query.error} retry={() => query.refetch()} /></Page>
   return (
-    <Page title="Мои группы" eyebrow="Вместе" back={false} action={<IconButton component={RouterLink} to="/profile" aria-label="Профиль"><SettingsRounded /></IconButton>}>
+    <Page title="Мои группы" back={false} action={<IconButton component={RouterLink} to="/profile" aria-label="Профиль"><SettingsRounded /></IconButton>}>
       <Stack spacing={1.5}>
         {query.data.length === 0 ? (
           <Box sx={{ py: 10, textAlign: 'center' }}>
@@ -33,7 +33,7 @@ export function GroupsPage() {
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography variant="h3" noWrap>{group.name}</Typography>
                   <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: .75 }}>
-                    <Chip size="small" label={`${group.participantCount} участн.`} />
+                    <Chip size="small" label={`${group.type === 'collective' ? 'Общая' : 'Личная'} · ${group.participantCount} участн.`} />
                     <Typography variant="caption" color="text.secondary">Покупки: <Money component="span" variant="caption" value={group.totalExpensesKopecks} /></Typography>
                   </Stack>
                 </Box>
