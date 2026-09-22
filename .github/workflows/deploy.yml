@@ -37,9 +37,21 @@ jobs:
         working-directory: ClientApp
         run: npm ci
 
-      - name: Check frontend
+      - name: Lint frontend
         working-directory: ClientApp
-        run: npm run lint && npm test && npm run build
+        run: npm run lint
+
+      - name: Test frontend with coverage
+        id: frontend-tests
+        working-directory: ClientApp
+        run: |
+          npm run test:coverage
+          coverage=$(node -p "Number(JSON.parse(require('fs').readFileSync('coverage/coverage-summary.json', 'utf8')).total.lines.pct).toFixed(2)")
+          echo "line-coverage=$coverage" >> "$GITHUB_OUTPUT"
+
+      - name: Build frontend
+        working-directory: ClientApp
+        run: npm run build
 
       - name: Restore dependencies
         run: dotnet restore SplitMoneyTg.Tests/SplitMoneyTg.Tests.csproj
@@ -47,8 +59,23 @@ jobs:
       - name: Build
         run: dotnet build SplitMoneyTg.Tests/SplitMoneyTg.Tests.csproj --configuration Release --no-restore
 
-      - name: Test
-        run: dotnet test SplitMoneyTg.Tests/SplitMoneyTg.Tests.csproj --configuration Release --no-build
+      - name: Test backend with coverage
+        id: backend-tests
+        run: |
+          dotnet test SplitMoneyTg.Tests/SplitMoneyTg.Tests.csproj --configuration Release --no-build --collect:"XPlat Code Coverage" --results-directory SplitMoneyTg.Tests/TestResults
+          coverage_file=$(find SplitMoneyTg.Tests/TestResults -name coverage.cobertura.xml -print -quit)
+          coverage=$(node -e 'const xml = require("fs").readFileSync(process.argv[1], "utf8"); const match = xml.match(/<coverage[^>]*line-rate="([^"]+)"/); if (!match) throw new Error("Coverage line rate not found"); process.stdout.write((Number(match[1]) * 100).toFixed(2));' "$coverage_file")
+          echo "line-coverage=$coverage" >> "$GITHUB_OUTPUT"
+
+      - name: Publish test coverage summary
+        run: |
+          {
+            printf '## Test coverage\n\n'
+            printf '| Area | Line coverage |\n'
+            printf '| --- | ---: |\n'
+            printf '| Frontend | %s%% |\n' '${{ steps.frontend-tests.outputs.line-coverage }}'
+            printf '| Backend | %s%% |\n' '${{ steps.backend-tests.outputs.line-coverage }}'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build production image
         run: docker build --platform linux/amd64 --tag ohmysplitwise:${{ github.sha }} .

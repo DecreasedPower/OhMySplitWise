@@ -9,3 +9,4 @@ riderModule.iml
 ClientApp/node_modules/
 ClientApp/dist/
 ClientApp/coverage/
+TestResults/
