@@ -17,6 +17,10 @@ public sealed record BalanceDto(long ParticipantId, string ParticipantName, long
 public sealed record SuggestedTransferDto(long FromParticipantId, string FromName, long ToParticipantId, string ToName, long AmountKopecks, string? PaymentDetails, bool CanMarkPaid, Guid? PendingTransferId);
 public sealed record PendingTransferDto(Guid Id, string FromName, string ToName, long AmountKopecks, bool CanResolve, long Version);
 public sealed record BalanceOverviewDto(IReadOnlyList<BalanceDto> Balances, IReadOnlyList<SuggestedTransferDto> Suggestions, IReadOnlyList<PendingTransferDto> PendingTransfers, long GroupRevision);
+public sealed record BalanceDetailsExpenseDto(Guid Id, string Description, long AmountKopecks, long PayerId, string PayerName, DateTimeOffset CreatedAt, IReadOnlyList<ExpenseShareDto> Shares);
+public sealed record BalanceDetailsTransferDto(Guid Id, long FromParticipantId, string FromName, long ToParticipantId, string ToName, long AmountKopecks, TransferStatus Status, DateTimeOffset CreatedAt);
+public sealed record BalanceDetailsSuggestionDto(long FromParticipantId, string FromName, long ToParticipantId, string ToName, long AmountKopecks, bool IsPending);
+public sealed record BalanceDetailsDto(string GroupName, DateTimeOffset GeneratedAt, IReadOnlyList<BalanceDetailsExpenseDto> Expenses, IReadOnlyList<BalanceDetailsTransferDto> Transfers, IReadOnlyList<BalanceDto> Balances, IReadOnlyList<BalanceDetailsSuggestionDto> Suggestions);
 public sealed record MarkPaidRequest(long ToParticipantId);
 public sealed record ResolveTransferRequest(string Status);
 public sealed record InvitationDto(Guid Id, string Token, string ShareUrl, string TelegramShareUrl, DateTimeOffset ExpiresAt, long Version, bool IsActive);

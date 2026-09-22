@@ -89,6 +89,45 @@ export interface BalanceOverview {
   groupRevision: number | string
 }
 
+export interface BalanceDetailsExpense {
+  id: Id
+  description: string
+  amountKopecks: MoneyString
+  payerId: Id
+  payerName: string
+  createdAt: string
+  shares: ExpenseShare[]
+}
+
+export interface BalanceDetailsTransfer {
+  id: Id
+  fromParticipantId: Id
+  fromName: string
+  toParticipantId: Id
+  toName: string
+  amountKopecks: MoneyString
+  status: 'pending' | 'confirmed'
+  createdAt: string
+}
+
+export interface BalanceDetailsSuggestion {
+  fromParticipantId: Id
+  fromName: string
+  toParticipantId: Id
+  toName: string
+  amountKopecks: MoneyString
+  isPending: boolean
+}
+
+export interface BalanceDetails {
+  groupName: string
+  generatedAt: string
+  expenses: BalanceDetailsExpense[]
+  transfers: BalanceDetailsTransfer[]
+  balances: Balance[]
+  suggestions: BalanceDetailsSuggestion[]
+}
+
 export interface Invitation {
   id: Id
   token: string

@@ -1,6 +1,6 @@
 import { api } from './client'
 import type {
-  BalanceOverview, Expense, ExpenseInput, Group, GroupSummary, GroupType, Invitation, Participant, UserProfile,
+  BalanceDetails, BalanceOverview, Expense, ExpenseInput, Group, GroupSummary, GroupType, Invitation, Participant, UserProfile,
 } from '../domain/types'
 
 type Version = number | string
@@ -56,6 +56,7 @@ export const endpoints = {
   updateExpense: (groupId: string, id: string, input: ExpenseInput, metadata: UpdateExpenseMetadata) => api<Expense>(`/groups/${groupId}/expenses/${id}`, { method: 'PUT', headers: mutationHeaders(metadata, ['version', 'groupRevision']), body: input }),
   deleteExpense: (groupId: string, id: string, metadata: DeleteExpenseMetadata) => api<void>(`/groups/${groupId}/expenses/${id}`, { method: 'DELETE', headers: mutationHeaders(metadata, ['version', 'groupRevision']) }),
   balances: (groupId: string) => api<BalanceOverview>(`/groups/${groupId}/balances`),
+  balanceDetails: (groupId: string) => api<BalanceDetails>(`/groups/${groupId}/balances/details`),
   markPaid: (groupId: string, toParticipantId: string, metadata: MarkPaidMetadata) =>
     api<void>(`/groups/${groupId}/transfers`, { method: 'POST', headers: mutationHeaders(metadata, ['groupRevision']), body: { toParticipantId } }),
   resolveTransfer: (groupId: string, transferId: string, resolution: 'confirmed' | 'rejected', metadata: ResolveTransferMetadata) =>

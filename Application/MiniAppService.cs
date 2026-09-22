@@ -231,6 +231,38 @@ public sealed class MiniAppService(
             .OrderByDescending(x => x.AmountKopecks).ToList(), suggestions, incoming, group.Revision);
     }
 
+    public async Task<BalanceDetailsDto> GetBalanceDetails(long userId, Guid groupId, CancellationToken ct)
+    {
+        var group = await RequireGroup(userId, groupId, ct);
+        var participants = await ParticipantInfos(groupId, false, ct);
+        var byId = participants.ToDictionary(x => x.Id);
+        string Name(long id) => byId.GetValueOrDefault(id)?.Name ?? id.ToString();
+
+        var expenses = await db.Expenses.Where(x => x.GroupId == groupId).Include(x => x.Shares)
+            .OrderByDescending(x => x.CreatedAt).ThenByDescending(x => x.Id).ToListAsync(ct);
+        var expenseDetails = expenses.Select(x => new BalanceDetailsExpenseDto(x.Id, x.Description, x.AmountKopecks,
+            x.PayerId, Name(x.PayerId), x.CreatedAt, x.Shares.Select(share => new ExpenseShareDto(share.UserId,
+                Name(share.UserId), share.AmountKopecks)).OrderBy(share => share.ParticipantName)
+                .ThenBy(share => share.ParticipantId).ToList())).ToList();
+
+        var transfers = await db.Transfers.Where(x => x.GroupId == groupId &&
+                (x.Status == TransferStatus.Confirmed || x.Status == TransferStatus.Pending))
+            .OrderByDescending(x => x.CreatedAt).ThenByDescending(x => x.Id).ToListAsync(ct);
+        var transferDetails = transfers.Select(x => new BalanceDetailsTransferDto(x.Id, x.FromUserId,
+            Name(x.FromUserId), x.ToUserId, Name(x.ToUserId), x.AmountKopecks, x.Status, x.CreatedAt)).ToList();
+
+        var balances = await balanceService.GetBalances(groupId, ct);
+        var balanceDetails = balances.Select(x => new BalanceDto(x.Key, Name(x.Key), x.Value))
+            .OrderByDescending(x => x.AmountKopecks).ThenBy(x => x.ParticipantName).ThenBy(x => x.ParticipantId).ToList();
+        var pendingPairs = transfers.Where(x => x.Status == TransferStatus.Pending)
+            .Select(x => (x.FromUserId, x.ToUserId)).ToHashSet();
+        var suggestions = BalanceService.Minimize(balances).Select(x => new BalanceDetailsSuggestionDto(x.FromUserId,
+            Name(x.FromUserId), x.ToUserId, Name(x.ToUserId), x.AmountKopecks,
+            pendingPairs.Contains((x.FromUserId, x.ToUserId)))).ToList();
+
+        return new(group.Name, DateTimeOffset.UtcNow, expenseDetails, transferDetails, balanceDetails, suggestions);
+    }
+
     public async Task MarkPaid(long userId, Guid groupId, MarkPaidRequest request, long? expectedRevision, CancellationToken ct)
     {
         Transfer? created = null;

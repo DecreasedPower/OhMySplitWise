@@ -1,8 +1,9 @@
 import CheckRounded from '@mui/icons-material/CheckRounded'
 import ContentCopyRounded from '@mui/icons-material/ContentCopyRounded'
 import PaymentsRounded from '@mui/icons-material/PaymentsRounded'
-import { Alert, Box, Button, Card, Chip, Divider, IconButton, Stack, Typography } from '@mui/material'
+import { Alert, Box, Button, Card, Chip, CircularProgress, Divider, IconButton, Stack, Tooltip, Typography } from '@mui/material'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { endpoints } from '../api/endpoints'
 import { isConcurrencyConflict } from '../api/conflicts'
@@ -10,6 +11,7 @@ import { useIdempotencyKeyStore, type IdempotentSubmission } from '../api/idempo
 import { ErrorState, FormError, PageLoader } from '../components/AsyncState'
 import { Money } from '../components/Money'
 import { Page } from '../components/Page'
+import { formatBalanceDetails } from '../domain/balanceDetails'
 import type { PendingTransfer } from '../domain/types'
 import { notify } from '../platform/telegram'
 
@@ -18,6 +20,7 @@ export function BalancesPage() {
   const client = useQueryClient()
   const paidKeys = useIdempotencyKeyStore()
   const resolveKeys = useIdempotencyKeyStore()
+  const [detailsCopied, setDetailsCopied] = useState(false)
   const query = useQuery({ queryKey: ['balances', groupId], queryFn: () => endpoints.balances(groupId) })
   const refresh = () => Promise.all([
     client.invalidateQueries({ queryKey: ['balances', groupId] }),
@@ -34,11 +37,26 @@ export function BalancesPage() {
     onSuccess: async (_, { key }) => { resolveKeys.settle(key); await refresh(); notify('success') },
     onError: async (error, { key }) => { resolveKeys.settle(key, error); if (isConcurrencyConflict(error)) await refresh(); notify('error') },
   })
+  const copyDetails = useMutation({
+    mutationFn: async () => {
+      const details = await endpoints.balanceDetails(groupId)
+      if (!navigator.clipboard?.writeText) throw new Error('Копирование недоступно на этом устройстве')
+      try {
+        await navigator.clipboard.writeText(formatBalanceDetails(details))
+      } catch {
+        throw new Error('Не удалось скопировать детализацию')
+      }
+    },
+    onMutate: () => setDetailsCopied(false),
+    onSuccess: () => { setDetailsCopied(true); notify('success') },
+    onError: () => notify('error'),
+  })
   if (query.isPending) return <PageLoader />
   if (query.isError) return <Page title="Баланс"><ErrorState error={query.error} retry={() => query.refetch()} /></Page>
   const data = query.data
-  return <Page title="Баланс" eyebrow="Кто кому должен">
-    <FormError message={paid.error?.message ?? resolve.error?.message} />
+  return <Page title="Баланс" eyebrow="Кто кому должен" action={<Tooltip title="Скопировать детализацию"><span><IconButton aria-label="Скопировать детализацию" disabled={copyDetails.isPending} onClick={() => copyDetails.mutate()}>{copyDetails.isPending ? <CircularProgress size={22} /> : <ContentCopyRounded />}</IconButton></span></Tooltip>}>
+    {detailsCopied && <Alert severity="success" sx={{ mb: 2 }}>Детализация скопирована</Alert>}
+    <FormError message={copyDetails.error?.message ?? paid.error?.message ?? resolve.error?.message} />
     <Card>{data.balances.map((balance, index) => <Box key={balance.participantId}><Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ p: 2 }}><Typography fontWeight={650}>{balance.participantName}</Typography><Money value={balance.amountKopecks} signed fontWeight={800} /></Stack>{index < data.balances.length - 1 && <Divider />}</Box>)}</Card>
     <Typography component="h2" variant="h3" sx={{ mt: 3, mb: 1.5 }}>Рекомендуемые переводы</Typography>
     {data.suggestions.length === 0 ? <Alert icon={<CheckRounded />} severity="success">Все расчёты закрыты</Alert> : <Stack spacing={1.25}>{data.suggestions.map((item) => <Card key={`${item.fromParticipantId}-${item.toParticipantId}`} sx={{ p: 2 }}>

@@ -200,6 +200,8 @@ api.MapDelete("/groups/{groupId:guid}/expenses/{expenseId:guid}", async (HttpCon
 }).WithMetadata(new MutationRequirements(true, true));
 api.MapGet("/groups/{groupId:guid}/balances", (HttpContext context, Guid groupId, MiniAppService service, CancellationToken ct) =>
     service.GetBalances(CurrentUser(context), groupId, ct));
+api.MapGet("/groups/{groupId:guid}/balances/details", (HttpContext context, Guid groupId, MiniAppService service, CancellationToken ct) =>
+    service.GetBalanceDetails(CurrentUser(context), groupId, ct));
 api.MapPost("/groups/{groupId:guid}/transfers", async (HttpContext context, Guid groupId, MarkPaidRequest request, MiniAppService service, CancellationToken ct) =>
 {
     await service.MarkPaid(CurrentUser(context), groupId, request, HeaderVersion(context, "X-Group-Revision"), ct);
