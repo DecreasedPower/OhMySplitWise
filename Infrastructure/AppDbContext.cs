@@ -22,6 +22,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.Entity<AppUser>().HasKey(x => x.TelegramId);
         modelBuilder.Entity<AppUser>().Property(x => x.TelegramId).ValueGeneratedNever();
         modelBuilder.Entity<AppUser>().Property(x => x.Version).HasDefaultValue(1L).IsConcurrencyToken();
+        modelBuilder.Entity<AppUser>().HasIndex(x => x.LastActiveAt);
         modelBuilder.Entity<ExpenseGroup>().HasKey(x => x.Id);
         modelBuilder.Entity<ExpenseGroup>().Property(x => x.Revision).HasDefaultValue(1L).IsConcurrencyToken();
         modelBuilder.Entity<ExpenseGroup>().HasOne<AppUser>().WithMany().HasForeignKey(x => x.OwnerId).OnDelete(DeleteBehavior.Restrict);

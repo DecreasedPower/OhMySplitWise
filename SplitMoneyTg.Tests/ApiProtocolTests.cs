@@ -85,7 +85,8 @@ public sealed class ApiProtocolTests
         await using (var rejectedScope = factory.Services.CreateAsyncScope())
         {
             var rejectedDb = rejectedScope.ServiceProvider.GetRequiredService<AppDbContext>();
-            Assert.Equal(0, await rejectedDb.Users.CountAsync(TestContext.Current.CancellationToken));
+            var activeUser = Assert.Single(await rejectedDb.Users.ToListAsync(TestContext.Current.CancellationToken));
+            Assert.NotNull(activeUser.LastActiveAt);
         }
 
         using (var get = new HttpRequestMessage(HttpMethod.Get, "/api/me"))
@@ -101,6 +102,14 @@ public sealed class ApiProtocolTests
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         var firstBody = await first.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         AssertNoStore(first);
+
+        var previousActivity = DateTimeOffset.UtcNow.AddDays(-40);
+        await using (var activityScope = factory.Services.CreateAsyncScope())
+        {
+            var activityDb = activityScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await activityDb.Users.ExecuteUpdateAsync(update => update.SetProperty(x => x.LastActiveAt, previousActivity),
+                TestContext.Current.CancellationToken);
+        }
 
         using var replay = await CreateGroup(client, authorization, key, "First");
         Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
@@ -121,6 +130,7 @@ public sealed class ApiProtocolTests
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         Assert.Equal(1, await db.Groups.CountAsync(TestContext.Current.CancellationToken));
+        Assert.True((await db.Users.SingleAsync(TestContext.Current.CancellationToken)).LastActiveAt > previousActivity);
         Directory.Delete(webRoot, recursive: true);
     }
 

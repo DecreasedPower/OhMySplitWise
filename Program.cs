@@ -20,6 +20,7 @@ builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(
     builder.Configuration.GetConnectionString("Postgres") ?? throw new InvalidOperationException("ConnectionStrings:Postgres is required")));
 builder.Services.AddScoped<BalanceService>();
 builder.Services.AddScoped<MiniAppService>();
+builder.Services.AddScoped<UsageMetricsService>();
 builder.Services.AddScoped<PostCommitActions>();
 builder.Services.AddScoped<BotHandler>();
 builder.Services.AddSingleton(TimeProvider.System);
@@ -117,16 +118,17 @@ app.Use(async (context, next) =>
             extensions: new Dictionary<string, object?> { ["code"] = "internal_error" }).ExecuteAsync(context);
     }
 });
-app.UseMiddleware<ApiIdempotencyMiddleware>();
 app.Use(async (context, next) =>
 {
     if (context.Request.Path.StartsWithSegments("/api"))
     {
         var user = (TelegramMiniAppUser)context.Items[typeof(TelegramMiniAppUser)]!;
         await context.RequestServices.GetRequiredService<MiniAppService>().UpsertUser(user, context.RequestAborted);
+        await context.RequestServices.GetRequiredService<UsageMetricsService>().RecordActivity(user.Id, context.RequestAborted);
     }
     await next(context);
 });
+app.UseMiddleware<ApiIdempotencyMiddleware>();
 
 app.MapPost("/telegram/webhook", async (HttpRequest request, Update update, BotHandler handler, IOptions<TelegramOptions> options, CancellationToken ct) =>
 {

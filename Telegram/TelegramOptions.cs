@@ -7,4 +7,9 @@ public sealed class TelegramOptions
     public string WebhookUrl { get; set; } = "";
     public string MiniAppUrl { get; set; } = "";
     public string WebhookSecret { get; set; } = "";
+    public string StatsAdminIds { get; set; } = "";
+
+    public bool CanViewStats(long userId) => userId > 0 && StatsAdminIds
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Any(value => long.TryParse(value, out var adminId) && adminId == userId);
 }

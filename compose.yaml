@@ -25,6 +25,7 @@
       Telegram__WebhookUrl: ${TELEGRAM_WEBHOOK_URL}
       Telegram__MiniAppUrl: ${TELEGRAM_MINI_APP_URL:-}
       Telegram__WebhookSecret: ${TELEGRAM_WEBHOOK_SECRET}
+      Telegram__StatsAdminIds: ${TELEGRAM_STATS_ADMIN_IDS:-}
     ports:
       - "8080:8080"
     depends_on:

@@ -8,6 +8,7 @@ public sealed class AppUser
     public string? PaymentDetails { get; set; }
     public long Version { get; set; } = 1;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset? LastActiveAt { get; set; }
 }
 
 public enum GroupType { Collective, Standalone }

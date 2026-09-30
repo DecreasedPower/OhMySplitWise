@@ -16,7 +16,8 @@ public sealed class BotHandler(
     ITelegramBotClient bot,
     AppDbContext db,
     BalanceService balanceService,
-    IOptions<TelegramOptions> telegramOptions)
+    IOptions<TelegramOptions> telegramOptions,
+    UsageMetricsService usageMetrics)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -52,8 +53,31 @@ public sealed class BotHandler(
             return;
         }
 
-        if (update.Message is not { From: { } from, Text: { } text }) return;
+        if (update.Message is not { From: { IsBot: false } from } message) return;
         await UpsertUser(from, ct);
+        if (message.Text is not { } text) return;
+        var command = text.Split(' ', 2)[0].Split('@', 2)[0];
+        if (command == "/stats")
+        {
+            if (message.Chat.Type != ChatType.Private)
+            {
+                await Send(message.Chat.Id, "Статистика доступна только в личном чате с ботом.", ct);
+                return;
+            }
+            if (!telegramOptions.Value.CanViewStats(from.Id))
+            {
+                await Send(from.Id, "Нет доступа к статистике.", ct);
+                return;
+            }
+            var metrics = await usageMetrics.GetMetrics(ct);
+            await Send(from.Id,
+                $"Статистика на {metrics.AsOf:dd.MM.yyyy HH:mm} UTC\n\n" +
+                $"Всего групп создано: {metrics.TotalGroupsCreated} (включая архивные)\n" +
+                $"Активных пользователей за 7 суток: {metrics.ActiveUsersLast7Days}\n" +
+                $"Активных пользователей за 30 суток: {metrics.ActiveUsersLast30Days}\n\n" +
+                "Активность: любое обращение к боту или авторизованный запрос Mini App.", ct);
+            return;
+        }
         if (text.StartsWith("/start", StringComparison.Ordinal))
         {
             await ClearSession(from.Id, ct);
@@ -82,8 +106,9 @@ public sealed class BotHandler(
 
     private async Task HandleCallback(CallbackQuery callback, CancellationToken ct)
     {
-        if (callback.From is not { } from || callback.Data is not { } data) return;
+        if (callback.From is not { IsBot: false } from) return;
         await UpsertUser(from, ct);
+        if (callback.Data is not { } data) return;
         var chatId = from.Id;
 
         if (data == "main") { await ClearSession(chatId, ct); await ShowMain(chatId, "Главное меню", ct); return; }
@@ -982,6 +1007,7 @@ public sealed class BotHandler(
         if (user is null) db.Users.Add(new AppUser { TelegramId = telegramUser.Id, DisplayName = name, Username = telegramUser.Username });
         else { user.DisplayName = name; user.Username = telegramUser.Username; }
         await db.SaveChangesAsync(ct);
+        await usageMetrics.RecordActivity(telegramUser.Id, ct);
     }
 
     private async Task<ExpenseGroup?> MemberGroup(long userId, Guid groupId, CancellationToken ct) =>

@@ -29,6 +29,7 @@ services:
       Telegram__WebhookUrl: https://${DOMAIN}:${HTTPS_PORT:-443}
       Telegram__MiniAppUrl: https://${DOMAIN}:${HTTPS_PORT:-443}
       Telegram__WebhookSecret: ${TELEGRAM_WEBHOOK_SECRET}
+      Telegram__StatsAdminIds: ${TELEGRAM_STATS_ADMIN_IDS:-}
     depends_on:
       postgres:
         condition: service_healthy
