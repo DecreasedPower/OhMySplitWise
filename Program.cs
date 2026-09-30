@@ -130,10 +130,12 @@ app.Use(async (context, next) =>
 });
 app.UseMiddleware<ApiIdempotencyMiddleware>();
 
-app.MapPost("/telegram/webhook", async (HttpRequest request, Update update, BotHandler handler, IOptions<TelegramOptions> options, CancellationToken ct) =>
+app.MapPost("/telegram/webhook", async (HttpRequest request, BotHandler handler, IOptions<TelegramOptions> options, CancellationToken ct) =>
 {
     if (!request.Headers.TryGetValue("X-Telegram-Bot-Api-Secret-Token", out var secret) || secret != options.Value.WebhookSecret)
         return Results.Unauthorized();
+    var update = await request.ReadFromJsonAsync<Update>(JsonBotAPI.Options, ct);
+    if (update is null) return Results.BadRequest();
     await handler.Handle(update, ct);
     return Results.Ok();
 });
